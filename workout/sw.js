@@ -7,7 +7,7 @@
  * CACHE 이름의 해시는 빌드(tools/build_single_file.py)가 index.html 내용에서
  * 자동으로 갱신한다. 내용이 바뀌면 이름이 바뀌고, 옛 캐시는 activate에서 지워진다.
  */
-const CACHE = "workout-602f9ac304da";
+const CACHE = "workout-387f6a1b8274";
 const ASSETS = ["./", "./index.html"];
 
 self.addEventListener("install", ev => {

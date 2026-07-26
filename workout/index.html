@@ -371,15 +371,16 @@ window.WORKOUT_HISTORY = [];
 "use strict";
 
 /* ---------- 종목 정의 ----------
- * 표시 순서는 어디서나 동일하다: 러닝 → 푸시업 → 턱걸이 → 하체 → 복근 → 나머지 */
+ * 입력 순서(= 화면에 보이는 순서):
+ *   러닝 → 푸시업(단독) → 턱걸이 → 복근 → 맨몸스쿼트 → 콤보1 → 콤보2 */
 const EXERCISES = [
-  { key: "running",     name: "러닝",                       unit: "km", decimal: true },
-  { key: "combo_upper", name: "푸시업 콤보(로우·해머컬)",   unit: "회" },
-  { key: "solo_pushup", name: "단독푸시업",                 unit: "회" },
-  { key: "pullup",      name: "턱걸이",                     unit: "회" },
-  { key: "combo_lower", name: "하체 콤보(밀프·스쿼트·카프)", unit: "회" },
-  { key: "solo_legs",   name: "단독하체",                   unit: "회" },
-  { key: "abs",         name: "복근",                       unit: "회" },
+  { key: "running",     name: "러닝",                          unit: "km", decimal: true },
+  { key: "solo_pushup", name: "푸시업(단독)",                  unit: "회" },
+  { key: "pullup",      name: "턱걸이",                        unit: "회" },
+  { key: "abs",         name: "복근",                          unit: "회" },
+  { key: "solo_legs",   name: "맨몸스쿼트",                    unit: "회" },
+  { key: "combo_upper", name: "콤보1(푸시업·로우·해머컬)",     unit: "회" },
+  { key: "combo_lower", name: "콤보2(밀프·스쿼트·카프레이즈)", unit: "회" },
   // 2023년 상반기 방식의 원시 기록 — 입력 폼에는 숨기고 합계에만 반영
   { key: "pushup",         name: "푸시업(구기록)",     unit: "회", legacy: true },
   { key: "legs",           name: "하체(구기록)",       unit: "회", legacy: true },
@@ -391,13 +392,26 @@ const DERIVED = [
   { key: "pushup_total", name: "푸시업 합계", unit: "회", parts: ["pushup", "combo_upper", "solo_pushup"] },
   { key: "legs_total",   name: "하체 합계",   unit: "회", parts: ["legs", "combo_lower", "solo_legs"] },
 ];
-// 주간 탭 요약에 쓰는 핵심 지표
-const WEEK_METRICS = ["running", "pushup_total", "pullup", "legs_total", "abs"];
-// 표 열 순서 — 핵심 지표 먼저, 그 뒤에 세부 종목
-const MONTH_COLS = ["running", "pushup_total", "pullup", "legs_total", "abs",
-                    "combo_upper", "solo_pushup", "combo_lower", "solo_legs"];
-// 전체 비교 차트에서 쌓아 올리는 지표 (단위가 '회'로 같은 것만)
-const STACK_METRICS = ["pushup_total", "pullup", "legs_total", "abs"];
+
+/* 지표 표시 순서 — 표·선택창·차트 어디서나 이 순서를 쓴다.
+ * 합계가 있는 종목은 합계를 먼저 놓고 바로 뒤에 단독 카운트를 붙인다. */
+const METRIC_ORDER = [
+  "running",        // 러닝
+  "pushup_total",   // 푸시업 합계
+  "solo_pushup",    //   └ 푸시업(단독)
+  "pullup",         // 턱걸이
+  "abs",            // 복근
+  "legs_total",     // 하체 합계
+  "solo_legs",      //   └ 맨몸스쿼트
+  "combo_upper",    // 콤보1
+  "combo_lower",    // 콤보2
+];
+// 주간 탭 요약 카드 — 합계 지표 위주
+const WEEK_METRICS = ["running", "pushup_total", "pullup", "abs", "legs_total"];
+// 표 열 순서
+const MONTH_COLS = METRIC_ORDER;
+// 전체 비교 차트에서 쌓아 올리는 지표 (단위가 '회'로 같고, 서로 겹치지 않는 것만)
+const STACK_METRICS = ["pushup_total", "pullup", "abs", "legs_total"];
 
 const EX_BY_KEY = {};
 EXERCISES.forEach(e => EX_BY_KEY[e.key] = e);
@@ -1124,8 +1138,8 @@ function renderTrend() {
       el("option", { value: v, ...(v === current.trendMode ? { selected: "" } : {}) }, n)));
 
   const exSelect = el("select", { onchange: ev => { current.trendEx = ev.target.value; render(); } },
-    [...DERIVED, ...EXERCISES.filter(e => !e.legacy)].map(e =>
-      el("option", { value: e.key, ...(e.key === current.trendEx ? { selected: "" } : {}) }, e.name)));
+    METRIC_ORDER.map(k =>
+      el("option", { value: k, ...(k === current.trendEx ? { selected: "" } : {}) }, exName(k))));
 
   const yearSelect = el("select", { onchange: ev => { current.trendYear = +ev.target.value; render(); } },
     years.map(y => el("option", { value: y, ...(y === current.trendYear ? { selected: "" } : {}) }, y + "년")));
