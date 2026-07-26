@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>운동일지</title>
+  <!-- 홈화면에 추가했을 때 브라우저 주소창 없이 앱처럼 열리게 한다 -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="운동일지">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0c1116" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#eef1f5" media="(prefers-color-scheme: light)">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8F%8B%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>운동일지</h1>
+    <nav id="tabs">
+      <button data-view="log" class="active">입력</button>
+      <button data-view="week">주간</button>
+      <button data-view="month">월간</button>
+      <button data-view="trend">추이</button>
+      <button data-view="data">데이터</button>
+    </nav>
+  </header>
+  <main id="app"></main>
+  <script src="history.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
