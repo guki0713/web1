@@ -261,7 +261,28 @@ table.grid td.derived { color: var(--accent); }
   color: var(--accent);
   padding: 6px 0;
 }
-.counter.prep { color: var(--dim); }   /* 준비시간 카운트다운은 눌러서 구분 */
+.counter.prep { color: var(--dim); }        /* 준비시간 카운트다운은 눌러서 구분 */
+.counter.prep.last3 { color: var(--warn); } /* 마지막 3초는 눈으로도 구분 */
+/* 소리가 안 나는 환경에서도 박자를 볼 수 있게 숫자를 한 번 튕긴다 */
+@keyframes beat {
+  0%   { transform: scale(1.18); opacity: 1; }
+  100% { transform: scale(1);    opacity: .92; }
+}
+.counter.beat { animation: beat .22s ease-out; }
+@media (prefers-reduced-motion: reduce) { .counter.beat { animation: none; } }
+
+.diag {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--dim);
+  line-height: 1.7;
+}
+.diag:empty { display: none; }
+
 .notes { margin: 0; padding-left: 18px; color: var(--dim); font-size: 13px; }
 .notes li { margin-bottom: 5px; }
 .notes li:last-child { margin-bottom: 0; }
