@@ -485,14 +485,16 @@ function renderMonth() {
 const audio = {
   ctx: null,
 
-  async unlock() {                       // 반드시 사용자 조작 안에서 부를 것
+  /* 반드시 사용자 조작(클릭 핸들러) 안에서, await 보다 먼저 부를 것.
+   * iOS는 await 이후를 '사용자 조작 직후'로 보지 않아 소리·음성이 모두 막힌다.
+   * 그래서 여기서는 기다리지 않고, 재생 준비 약속만 돌려준다. */
+  unlockSync() {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     if (!this.ctx) this.ctx = new Ctx();
     try {                                // 무음 스위치를 무시하고 재생 (Safari 16.4+)
       if (navigator.audioSession) navigator.audioSession.type = "playback";
     } catch (e) { /* 미지원 기기는 그냥 넘어간다 */ }
-    await this.ctx.resume();
-    return this.ctx;
+    return { ctx: this.ctx, ready: this.ctx.resume() };
   },
 
   /* 소리 한 번. when=예약 시각, freq=높이, vol=크기, dur=길이 */
@@ -566,8 +568,11 @@ const metronome = {
     this.count = 0;
     speaker.worked = false; speaker.attempted = 0;
 
-    const ctx = await audio.unlock();
+    // ── 여기부터 await 이전까지는 사용자 조작 컨텍스트가 살아 있어야 한다 ──
+    const { ctx, ready } = audio.unlockSync();
     if (this.mode === "voice") speaker.say("Get ready", 1);   // iOS는 첫 발음이 조작 안에서 일어나야 한다
+    // ── 여기부터는 기다려도 된다 ──
+    await ready;
     try {
       if (navigator.wakeLock) this.wakeLock = await navigator.wakeLock.request("screen");
     } catch (e) { /* 미지원 기기는 그냥 넘어간다 */ }
@@ -674,21 +679,36 @@ function renderTest() {
     "카운트가 시작됩니다. 하나에 1회씩 맞춰서 하고, 박자를 놓치는 순간 정지를 누르세요.";
   const hint = el("p", { class: "muted" }, IDLE_HINT);
 
-  // 시작 전에 소리가 나는지 확인할 수 있게 — iOS 무음 스위치 문제를 바로 잡아내기 위함
+  // 진단 결과 표시 — 소리가 안 날 때 원인을 화면에서 바로 확인할 수 있게
+  const diag = el("div", { class: "diag" });
+
   const soundCheck = el("button", { class: "btn", onclick: async () => {
-    await audio.unlock();
-    const t = audio.ctx.currentTime;
+    // ── await 이전: 사용자 조작 컨텍스트 안에서 처리해야 iOS가 막지 않는다 ──
+    const { ctx, ready } = audio.unlockSync();
+    speaker.worked = false;
+    const spoke = speaker.say("One", 1);
+    // ── 이후는 기다려도 된다 ──
+    await ready;
+    const t = ctx.currentTime;
     audio.tick(t + 0.05, true); audio.tick(t + 0.45, false);
     audio.ready(t + 0.9); audio.go(t + 1.4);
-    if (current.testSound === "voice") {
-      speaker.say("One", 1);
-      setTimeout(() => {
-        hint.textContent = speaker.worked
-          ? "음성이 정상입니다."
-          : "신호음은 나지만 음성이 재생되지 않는 기기입니다. 카운트가 자동으로 신호음으로 바뀝니다.";
-      }, 1500);
-    }
-    hint.textContent = "째깍 → 삑 → 시작음 순서로 들려야 합니다. 아무 소리도 없으면 무음 스위치와 볼륨을 확인하세요.";
+    hint.textContent = "째깍 → 삑 → 시작음 순서로 들려야 합니다.";
+
+    setTimeout(() => {
+      const voices = window.speechSynthesis ? speechSynthesis.getVoices().length : 0;
+      const session = navigator.audioSession ? (navigator.audioSession.type || "설정됨") : "미지원";
+      const standalone = window.navigator.standalone || matchMedia("(display-mode: standalone)").matches;
+      diag.innerHTML = "";
+      diag.append(
+        el("div", null, `소리 장치: ${ctx.state === "running" ? "정상" : "잠김(" + ctx.state + ")"}`),
+        el("div", null, `무음 스위치 무시: ${session}`),
+        el("div", null, `음성: ${!spoke ? "미지원" : speaker.worked ? "정상" : "재생 실패"} (설치된 목소리 ${voices}개)`),
+        el("div", null, `실행 형태: ${standalone ? "홈 화면 앱" : "사파리"}`));
+      if (spoke && !speaker.worked)
+        hint.textContent = "신호음은 나지만 음성이 재생되지 않습니다. 카운트를 [신호음]으로 쓰세요.";
+      else if (speaker.worked)
+        hint.textContent = "음성까지 정상입니다.";
+    }, 1800);
   } }, "소리 확인");
 
   const startBtn = el("button", { class: "btn primary", style: "flex:1" }, "시작");
@@ -702,9 +722,17 @@ function renderTest() {
     try {
       await metronome.start({
         bpm: current.testBpm, prep: current.testPrep, mode: current.testSound,
-        onCount: n => { counter.classList.remove("prep"); counter.textContent = String(n); },
+        // 소리가 전혀 안 나는 환경에서도 박자를 볼 수 있게 숫자를 깜빡인다
+        onCount: n => {
+          counter.classList.remove("prep", "last3");
+          counter.textContent = String(n);
+          counter.classList.remove("beat");
+          void counter.offsetWidth;        // 애니메이션 재시작을 위한 강제 리플로우
+          counter.classList.add("beat");
+        },
         onPrep: left => {
           counter.textContent = String(left);
+          counter.classList.toggle("last3", left <= 3);
           if (left === 0) hint.textContent = "시작! 소리에 맞춰 진행하세요.";
         },
         onFallback: () => { hint.textContent = "이 기기는 음성을 재생하지 못해 신호음으로 전환했습니다."; },
@@ -718,7 +746,7 @@ function renderTest() {
   stopBtn.addEventListener("click", () => {
     const reps = metronome.stop();
     startBtn.disabled = false; stopBtn.setAttribute("disabled", "");
-    counter.classList.remove("prep");
+    counter.classList.remove("prep", "last3", "beat");
     if (reps > 0 && confirm(`${testName(current.testEx)} ${reps}회 (${current.testBpm} BPM)로 기록할까요?`)) {
       saveTest(current.testEx, reps, current.testBpm);
     }
@@ -783,6 +811,7 @@ function renderTest() {
         bpmInput, el("span", { class: "muted" }, "BPM"),
         prepInput, el("span", { class: "muted" }, "초 준비"),
         soundCheck),
+      diag,
       counter,
       el("div", { class: "row", style: "margin:10px 0" }, startBtn, stopBtn),
       hint),
