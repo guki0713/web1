@@ -279,6 +279,9 @@ table.grid td.derived { color: var(--accent); }
   padding: 6px 0;
 }
 .counter.prep { color: var(--dim); }   /* 준비시간 카운트다운은 눌러서 구분 */
+.notes { margin: 0; padding-left: 18px; color: var(--dim); font-size: 13px; }
+.notes li { margin-bottom: 5px; }
+.notes li:last-child { margin-bottom: 0; }
 button.btn.tiny { padding: 3px 8px; font-size: 12.5px; }
 button.btn[disabled] { opacity: .4; cursor: default; }
 
@@ -529,7 +532,7 @@ let current = { view: "log", date: iso(new Date()), weekMonday: mondayOf(new Dat
                 month: new Date().getMonth(), year: new Date().getFullYear(),
                 trendEx: "pushup_total", trendYear: new Date().getFullYear(),
                 trendUnit: "week", trendMode: "single",
-                testEx: "pullup", testBpm: 30, testPrep: 15 };
+                testEx: "pullup", testBpm: 30, testPrep: 15, testSound: "voice" };
 
 document.getElementById("tabs").addEventListener("click", ev => {
   const btn = ev.target.closest("button[data-view]");
@@ -838,15 +841,59 @@ function renderMonth() {
       el("div", { class: "tablewrap" }, el("table", { class: "grid" }, header, rows))));
 }
 
-/* ---------- 카운트 음성 ----------
- * 박자를 '띡' 소리 대신 영어 숫자로 읽어 준다. 세면서 운동하지 않아도 되고,
- * 몇 회째인지 귀로 바로 알 수 있다.
+/* ---------- 소리 ----------
+ * iOS에서 소리가 안 나던 원인 두 가지를 함께 처리한다.
+ *   1) 무음 스위치: 기본값(ambient)은 무음 모드에서 음소거된다.
+ *      navigator.audioSession.type = "playback" 으로 바꾸면 무음 스위치를 무시한다.
+ *   2) 홈 화면 앱(standalone)에서 음성 합성이 동작하지 않는 기기가 있다.
+ *      말이 실제로 시작됐는지(onstart) 확인해, 안 되면 신호음으로 자동 전환한다.
  *
- * 타이밍은 오디오 시계(AudioContext.currentTime)로 잡는다. setInterval은
- * 화면이 꺼지거나 부하가 걸리면 밀리지만, 오디오 시계는 밀리지 않는다.
- * 25ms마다 시계를 확인해 도달한 순간에 발음하므로 오차는 사람이 느끼지 못하는 수준이다. */
+ * 타이밍은 오디오 시계(AudioContext.currentTime)로 잡는다. setInterval은 화면이
+ * 꺼지거나 부하가 걸리면 밀리지만 오디오 시계는 밀리지 않는다.
+ */
+const audio = {
+  ctx: null,
+
+  async unlock() {                       // 반드시 사용자 조작 안에서 부를 것
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!this.ctx) this.ctx = new Ctx();
+    try {                                // 무음 스위치를 무시하고 재생 (Safari 16.4+)
+      if (navigator.audioSession) navigator.audioSession.type = "playback";
+    } catch (e) { /* 미지원 기기는 그냥 넘어간다 */ }
+    await this.ctx.resume();
+    return this.ctx;
+  },
+
+  /* 소리 한 번. when=예약 시각, freq=높이, vol=크기, dur=길이 */
+  tone(when, freq, vol, dur) {
+    if (!this.ctx) return;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = "square";                 // 사인파보다 작은 볼륨에서도 또렷하다
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.0001, when);
+    gain.gain.exponentialRampToValueAtTime(vol, when + 0.004);
+    gain.gain.setValueAtTime(vol, when + dur * 0.6);
+    gain.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+    osc.connect(gain); gain.connect(this.ctx.destination);
+    osc.start(when); osc.stop(when + dur + 0.02);
+  },
+
+  // 준비시간 째깍 — 작고 짧게, 두 높이를 번갈아 '째깍'처럼
+  tick(when, odd) { this.tone(when, odd ? 1500 : 1150, 0.07, 0.035); },
+  // 착수 3·2·1 — 크고 또렷하게
+  ready(when)     { this.tone(when, 880, 0.9, 0.16); },
+  // 시작 신호 — 더 높고 길게
+  go(when)        { this.tone(when, 1320, 1.0, 0.34); },
+  // 음성이 안 될 때 쓰는 카운트 신호음
+  count(when, tenth) { this.tone(when, tenth ? 1500 : 1000, 0.75, 0.1); },
+};
+
 const speaker = {
   voice: null,
+  worked: false,          // 실제로 발음이 시작된 적이 있는가
+  attempted: 0,
+
   pick() {
     if (this.voice) return this.voice;
     const vs = window.speechSynthesis ? speechSynthesis.getVoices() : [];
@@ -854,54 +901,73 @@ const speaker = {
               || vs.find(v => /^en/i.test(v.lang)) || null;
     return this.voice;
   },
+
   say(text, rate) {
-    if (!window.speechSynthesis) return;
-    const u = new SpeechSynthesisUtterance(text);
-    const v = this.pick();
-    if (v) u.voice = v;
-    u.lang = "en-US";
-    u.rate = rate || 1.15;
-    u.pitch = 1;
-    speechSynthesis.cancel();      // 이전 발음이 남아 밀리지 않게
-    speechSynthesis.speak(u);
+    if (!window.speechSynthesis) return false;
+    try {
+      const u = new SpeechSynthesisUtterance(text);
+      const v = this.pick();
+      if (v) u.voice = v;
+      u.lang = "en-US";
+      u.rate = rate || 1.15;
+      u.volume = 1;
+      u.onstart = () => { this.worked = true; };
+      this.attempted++;
+      speechSynthesis.speak(u);
+      return true;
+    } catch (e) { return false; }
   },
+
+  silence() { if (window.speechSynthesis) speechSynthesis.cancel(); },
+  available() { return !!window.speechSynthesis; },
 };
 if (window.speechSynthesis) speechSynthesis.onvoiceschanged = () => { speaker.voice = null; };
 
 const metronome = {
-  ctx: null, timer: null, nextTick: 0, count: 0, bpm: 30, prep: 15,
-  startAt: 0, phase: "idle",       // idle | prep | run
-  wakeLock: null, onCount: null, onPrep: null,
+  timer: null, nextTick: 0, count: 0, bpm: 30, prep: 15,
+  startAt: 0, phase: "idle", mode: "voice",       // idle | prep | run
+  wakeLock: null, onCount: null, onPrep: null, onFallback: null,
 
-  async start(bpm, prepSec, onCount, onPrep) {
+  async start(opts) {
     this.stop();
-    this.bpm = bpm; this.prep = prepSec; this.count = 0;
-    this.onCount = onCount; this.onPrep = onPrep;
+    this.bpm = opts.bpm; this.prep = opts.prep; this.mode = opts.mode;
+    this.onCount = opts.onCount; this.onPrep = opts.onPrep; this.onFallback = opts.onFallback;
+    this.count = 0;
+    speaker.worked = false; speaker.attempted = 0;
 
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!this.ctx) this.ctx = new Ctx();
-    await this.ctx.resume();                       // iOS는 사용자 조작 직후에만 열린다
-    // iOS는 첫 발음이 사용자 조작 안에서 일어나야 이후 발음이 허용된다
-    speaker.say("Get ready", 1);
+    const ctx = await audio.unlock();
+    if (this.mode === "voice") speaker.say("Get ready", 1);   // iOS는 첫 발음이 조작 안에서 일어나야 한다
     try {
       if (navigator.wakeLock) this.wakeLock = await navigator.wakeLock.request("screen");
     } catch (e) { /* 미지원 기기는 그냥 넘어간다 */ }
 
-    this.phase = "prep";
-    this.startAt = this.ctx.currentTime + this.prep;   // 준비시간 후 1회차
+    this.startAt = ctx.currentTime + this.prep;
     this.nextTick = this.startAt;
     this.lastPrepCall = null;
+    this.phase = this.prep > 0 ? "prep" : "run";
+
+    // 준비시간 소리는 시각이 정해져 있으므로 미리 전부 예약한다 (박자가 절대 흔들리지 않음)
+    if (this.prep > 0) {
+      audio.tick(ctx.currentTime + 0.02, true);   // 눌린 즉시 첫 째깍 — 시작된 것을 바로 알린다
+      for (let k = this.prep - 1; k >= 1; k--) {
+        const when = this.startAt - k;
+        if (when < ctx.currentTime) continue;
+        if (k <= 3) audio.ready(when);            // 3·2·1 크게
+        else audio.tick(when, k % 2 === 1);       // 그 전까지 째깍째깍 작게
+      }
+      audio.go(this.startAt);                     // 착수 신호
+    }
+
     this.timer = setInterval(() => this.tick(), 25);
   },
 
   tick() {
-    const now = this.ctx.currentTime;
+    const now = audio.ctx.currentTime;
     if (this.phase === "prep") {
       const left = Math.ceil(this.startAt - now);
       if (left !== this.lastPrepCall) {
         this.lastPrepCall = left;
         if (this.onPrep) this.onPrep(Math.max(0, left));
-        if (left > 0 && left <= 3) this.beep(now, 900);   // 3·2·1 짧은 신호음
       }
       if (now < this.startAt) return;
       this.phase = "run";
@@ -909,27 +975,30 @@ const metronome = {
     const interval = 60 / this.bpm;
     while (now >= this.nextTick) {
       this.count++;
-      speaker.say(String(this.count));
+      this.announce(this.count, now);
       if (this.onCount) this.onCount(this.count);
       this.nextTick += interval;
     }
   },
 
-  beep(when, freq) {
-    const osc = this.ctx.createOscillator();
-    const gain = this.ctx.createGain();
-    osc.frequency.value = freq;
-    gain.gain.setValueAtTime(0.0001, when);
-    gain.gain.exponentialRampToValueAtTime(0.5, when + 0.002);
-    gain.gain.exponentialRampToValueAtTime(0.0001, when + 0.09);
-    osc.connect(gain); gain.connect(this.ctx.destination);
-    osc.start(when); osc.stop(when + 0.1);
+  announce(n, now) {
+    if (this.mode === "voice") {
+      // 두 번 시도했는데도 발음이 시작되지 않으면 기기가 음성을 못 쓰는 것으로 보고 전환
+      if (speaker.attempted >= 2 && !speaker.worked) {
+        this.mode = "beep";
+        if (this.onFallback) this.onFallback();
+      } else {
+        speaker.say(String(n));
+        return;
+      }
+    }
+    audio.count(now, n % 10 === 0);
   },
 
   stop() {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     if (this.wakeLock) { this.wakeLock.release().catch(() => {}); this.wakeLock = null; }
-    if (window.speechSynthesis) speechSynthesis.cancel();
+    speaker.silence();
     this.phase = "idle";
     return this.count;
   },
@@ -965,10 +1034,31 @@ function renderTest() {
     value: current.testPrep, style: "width:76px",
     onchange: ev => { current.testPrep = Math.max(0, Math.min(60, +ev.target.value || 0)); } });
 
+  const modeSelect = el("select", { onchange: ev => { current.testSound = ev.target.value; } },
+    [["voice", "영어 음성"], ["beep", "신호음"]].map(([v, n]) =>
+      el("option", { value: v, ...(v === current.testSound ? { selected: "" } : {}) }, n)));
+
   const counter = el("div", { class: "counter" }, "0");
-  const IDLE_HINT = "시작을 누르면 준비시간이 흐른 뒤, 영어로 숫자를 세어 줍니다. " +
-    "숫자 하나에 1회씩 맞춰서 하고, 박자를 놓치는 순간 정지를 누르세요. 그때까지의 횟수가 기록됩니다.";
+  const IDLE_HINT = "시작을 누르면 준비시간 동안 째깍째깍 소리가 나고, 마지막 3초에 크게 삑삑삑 울린 뒤 " +
+    "카운트가 시작됩니다. 하나에 1회씩 맞춰서 하고, 박자를 놓치는 순간 정지를 누르세요.";
   const hint = el("p", { class: "muted" }, IDLE_HINT);
+
+  // 시작 전에 소리가 나는지 확인할 수 있게 — iOS 무음 스위치 문제를 바로 잡아내기 위함
+  const soundCheck = el("button", { class: "btn", onclick: async () => {
+    await audio.unlock();
+    const t = audio.ctx.currentTime;
+    audio.tick(t + 0.05, true); audio.tick(t + 0.45, false);
+    audio.ready(t + 0.9); audio.go(t + 1.4);
+    if (current.testSound === "voice") {
+      speaker.say("One", 1);
+      setTimeout(() => {
+        hint.textContent = speaker.worked
+          ? "음성이 정상입니다."
+          : "신호음은 나지만 음성이 재생되지 않는 기기입니다. 카운트가 자동으로 신호음으로 바뀝니다.";
+      }, 1500);
+    }
+    hint.textContent = "째깍 → 삑 → 시작음 순서로 들려야 합니다. 아무 소리도 없으면 무음 스위치와 볼륨을 확인하세요.";
+  } }, "소리 확인");
 
   const startBtn = el("button", { class: "btn primary", style: "flex:1" }, "시작");
   const stopBtn = el("button", { class: "btn danger", style: "flex:1", disabled: "" }, "정지 · 기록");
@@ -979,12 +1069,15 @@ function renderTest() {
     startBtn.disabled = true; stopBtn.removeAttribute("disabled");
     hint.textContent = `${current.testBpm} BPM · 1회당 ${(60 / current.testBpm).toFixed(1)}초. 준비하세요.`;
     try {
-      await metronome.start(current.testBpm, current.testPrep,
-        n => { counter.classList.remove("prep"); counter.textContent = String(n); },
-        left => {
+      await metronome.start({
+        bpm: current.testBpm, prep: current.testPrep, mode: current.testSound,
+        onCount: n => { counter.classList.remove("prep"); counter.textContent = String(n); },
+        onPrep: left => {
           counter.textContent = String(left);
-          if (left === 0) hint.textContent = "시작! 숫자에 맞춰 진행하세요.";
-        });
+          if (left === 0) hint.textContent = "시작! 소리에 맞춰 진행하세요.";
+        },
+        onFallback: () => { hint.textContent = "이 기기는 음성을 재생하지 못해 신호음으로 전환했습니다."; },
+      });
     } catch (e) {
       startBtn.disabled = false; stopBtn.setAttribute("disabled", "");
       counter.classList.remove("prep");
@@ -1054,9 +1147,11 @@ function renderTest() {
   app.append(
     el("div", { class: "card" },
       el("h2", null, "최대반복 테스트"),
-      el("div", { class: "row" }, exSelect,
+      el("div", { class: "row" }, exSelect, modeSelect),
+      el("div", { class: "row", style: "margin-top:6px" },
         bpmInput, el("span", { class: "muted" }, "BPM"),
-        prepInput, el("span", { class: "muted" }, "초 준비")),
+        prepInput, el("span", { class: "muted" }, "초 준비"),
+        soundCheck),
       counter,
       el("div", { class: "row", style: "margin:10px 0" }, startBtn, stopBtn),
       hint),
@@ -1083,6 +1178,14 @@ function renderTest() {
         el("span", { class: "muted" }, "직접 입력"), manualReps,
         el("button", { class: "btn", onclick: manualAdd }, "추가")),
       list),
+    el("div", { class: "card" },
+      el("h2", null, "소리가 안 들릴 때"),
+      el("ul", { class: "notes" },
+        el("li", null, "아이폰 측면의 무음 스위치를 해제하세요. 가장 흔한 원인입니다."),
+        el("li", null, "볼륨을 올린 뒤 [소리 확인]을 눌러 보세요. 째깍 → 삑 → 시작음 순으로 들려야 합니다."),
+        el("li", null, "신호음은 나는데 영어 음성만 안 나오는 기기가 있습니다. 그때는 자동으로 신호음 카운트로 바뀌고, " +
+                       "위 선택창에서 직접 [신호음]을 고를 수도 있습니다."),
+        el("li", null, "다른 앱에서 음악·영상이 재생 중이면 소리가 겹치거나 막힐 수 있습니다."))),
     el("div", { class: "card" },
       el("h2", null, "왜 이 테스트인가"),
       el("p", { class: "muted" },

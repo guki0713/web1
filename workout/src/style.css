@@ -262,6 +262,9 @@ table.grid td.derived { color: var(--accent); }
   padding: 6px 0;
 }
 .counter.prep { color: var(--dim); }   /* 준비시간 카운트다운은 눌러서 구분 */
+.notes { margin: 0; padding-left: 18px; color: var(--dim); font-size: 13px; }
+.notes li { margin-bottom: 5px; }
+.notes li:last-child { margin-bottom: 0; }
 button.btn.tiny { padding: 3px 8px; font-size: 12.5px; }
 button.btn[disabled] { opacity: .4; cursor: default; }
 
