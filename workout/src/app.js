@@ -4,14 +4,15 @@
  */
 "use strict";
 
-/* ---------- 종목 정의 ---------- */
+/* ---------- 종목 정의 ----------
+ * 표시 순서는 어디서나 동일하다: 러닝 → 푸시업 → 턱걸이 → 하체 → 복근 → 나머지 */
 const EXERCISES = [
-  { key: "pullup",      name: "턱걸이",                     unit: "회" },
+  { key: "running",     name: "러닝",                       unit: "km", decimal: true },
   { key: "combo_upper", name: "푸시업 콤보(로우·해머컬)",   unit: "회" },
   { key: "solo_pushup", name: "단독푸시업",                 unit: "회" },
+  { key: "pullup",      name: "턱걸이",                     unit: "회" },
   { key: "combo_lower", name: "하체 콤보(밀프·스쿼트·카프)", unit: "회" },
   { key: "solo_legs",   name: "단독하체",                   unit: "회" },
-  { key: "running",     name: "러닝",                       unit: "km", decimal: true },
   { key: "abs",         name: "복근",                       unit: "회" },
   // 2023년 상반기 방식의 원시 기록 — 입력 폼에는 숨기고 합계에만 반영
   { key: "pushup",         name: "푸시업(구기록)",     unit: "회", legacy: true },
@@ -24,11 +25,13 @@ const DERIVED = [
   { key: "pushup_total", name: "푸시업 합계", unit: "회", parts: ["pushup", "combo_upper", "solo_pushup"] },
   { key: "legs_total",   name: "하체 합계",   unit: "회", parts: ["legs", "combo_lower", "solo_legs"] },
 ];
-// 주간 탭 요약에 쓰는 핵심 지표 순서
-const WEEK_METRICS = ["pushup_total", "legs_total", "pullup", "running", "abs"];
-// 월간 표 열 순서 (기존 템플릿과 동일한 배치)
-const MONTH_COLS = ["pullup", "pushup_total", "legs_total", "running", "abs",
-                    "combo_upper", "combo_lower", "solo_pushup", "solo_legs"];
+// 주간 탭 요약에 쓰는 핵심 지표
+const WEEK_METRICS = ["running", "pushup_total", "pullup", "legs_total", "abs"];
+// 표 열 순서 — 핵심 지표 먼저, 그 뒤에 세부 종목
+const MONTH_COLS = ["running", "pushup_total", "pullup", "legs_total", "abs",
+                    "combo_upper", "solo_pushup", "combo_lower", "solo_legs"];
+// 전체 비교 차트에서 쌓아 올리는 지표 (단위가 '회'로 같은 것만)
+const STACK_METRICS = ["pushup_total", "pullup", "legs_total", "abs"];
 
 const EX_BY_KEY = {};
 EXERCISES.forEach(e => EX_BY_KEY[e.key] = e);
@@ -145,7 +148,8 @@ const views = { log: renderLog, week: renderWeek, month: renderMonth,
 let current = { view: "log", date: iso(new Date()), weekMonday: mondayOf(new Date()),
                 month: new Date().getMonth(), year: new Date().getFullYear(),
                 trendEx: "pushup_total", trendYear: new Date().getFullYear(),
-                testEx: "pullup", testBpm: 30 };
+                trendUnit: "week", trendMode: "single",
+                testEx: "pullup", testBpm: 30, testPrep: 15 };
 
 document.getElementById("tabs").addEventListener("click", ev => {
   const btn = ev.target.closest("button[data-view]");
@@ -178,28 +182,79 @@ function renderLog() {
 
   const form = el("div", { class: "entry-grid" });
   for (const ex of EXERCISES.filter(e => !e.legacy)) {
-    const input = el("input", { type: "text", inputmode: "decimal",
-      placeholder: ex.decimal ? "예: 3.07" : "예: 5x10+5x10 또는 100" });
-    const preview = el("div", { class: "preview" });
-    input.addEventListener("input", () => {
-      const v = parseSets(input.value);
-      preview.textContent = v == null
-        ? (input.value.trim() ? "형식을 확인하세요" : "")
-        : `= ${fmtNum(v, ex.decimal)} ${ex.unit}`;
-    });
+    form.appendChild(ex.decimal ? distanceRow(ex) : repsRow(ex));
+  }
+
+  // 러닝처럼 거리 하나만 적는 종목
+  function distanceRow(ex) {
+    const km = el("input", { type: "number", inputmode: "decimal", step: "0.01", min: "0",
+      placeholder: "예: 3.07", class: "num grow" });
     const add = () => {
-      const v = parseSets(input.value);
-      if (v == null || v <= 0) { input.focus(); return; }
-      const s = /[x×+]/.test(input.value) ? input.value.trim().replace(/x/g, "×") : undefined;
-      state.entries.push({ id: uid(), d: current.date, ex: ex.key, v, s });
-      saveState();
-      render();
+      const v = parseFloat(km.value);
+      if (!(v > 0)) { km.focus(); return; }
+      state.entries.push({ id: uid(), d: current.date, ex: ex.key, v: Math.round(v * 1000) / 1000 });
+      saveState(); render();
     };
-    input.addEventListener("keydown", ev => { if (ev.key === "Enter") add(); });
-    form.appendChild(el("div", { class: "entry-row" },
-      el("label", null, `${ex.name} (${ex.unit})`), input,
-      el("button", { class: "btn primary", onclick: add }, "추가")));
-    form.appendChild(preview);
+    km.addEventListener("keydown", e => { if (e.key === "Enter") add(); });
+    return el("div", { class: "entry-row" },
+      el("label", null, `${ex.name} (${ex.unit})`),
+      el("div", { class: "numline" }, km),
+      el("button", { class: "btn primary", onclick: add }, "추가"));
+  }
+
+  /* 반복 종목: 사이클 = 운동 + 휴식, 운동 = 반복수 × 세트수
+   * → 총량 = 반복수 × 세트 × 사이클.
+   * 세트·사이클을 비우면 1로 본다. 총량만 알고 있으면 총량 칸에 바로 적어도 된다. */
+  function repsRow(ex) {
+    const reps   = el("input", { type: "number", inputmode: "numeric", min: "0", step: "1",
+      placeholder: "반복", class: "num", "aria-label": `${ex.name} 반복수` });
+    const sets   = el("input", { type: "number", inputmode: "numeric", min: "0", step: "1",
+      placeholder: "세트", class: "num", "aria-label": `${ex.name} 세트수` });
+    const cycles = el("input", { type: "number", inputmode: "numeric", min: "0", step: "1",
+      placeholder: "사이클", class: "num", "aria-label": `${ex.name} 사이클수` });
+    const total  = el("input", { type: "number", inputmode: "numeric", min: "0", step: "1",
+      placeholder: "총량", class: "num total", "aria-label": `${ex.name} 총량` });
+
+    let totalTouched = false;   // 총량을 직접 고쳤다면 자동 계산이 덮어쓰지 않는다
+    const calc = () => {
+      const r = parseInt(reps.value, 10);
+      if (!(r > 0)) return null;
+      const s = parseInt(sets.value, 10) || 1;
+      const c = parseInt(cycles.value, 10) || 1;
+      return { v: r * s * c, r, s, c };
+    };
+    const sync = () => {
+      if (totalTouched) return;
+      const got = calc();
+      total.value = got ? got.v : "";
+    };
+    [reps, sets, cycles].forEach(i => i.addEventListener("input", sync));
+    total.addEventListener("input", () => { totalTouched = total.value !== ""; });
+
+    const add = () => {
+      const got = calc();
+      const typed = parseInt(total.value, 10);
+      // 총량을 직접 적었으면 그 값이 우선
+      const v = totalTouched && typed > 0 ? typed : (got ? got.v : typed);
+      if (!(v > 0)) { reps.focus(); return; }
+      // 계산으로 나온 값일 때만 내역(10×5×2)을 함께 남긴다
+      const s = got && !totalTouched
+        ? [got.r, got.s > 1 ? got.s : null, got.c > 1 ? got.c : null].filter(Boolean).join("×")
+        : undefined;
+      state.entries.push({ id: uid(), d: current.date, ex: ex.key, v, s: s && s.includes("×") ? s : undefined });
+      saveState(); render();
+    };
+    [reps, sets, cycles, total].forEach(i =>
+      i.addEventListener("keydown", e => { if (e.key === "Enter") add(); }));
+
+    return el("div", { class: "entry-row" },
+      el("label", null, ex.name),
+      el("div", { class: "numline" },
+        reps, el("span", { class: "op" }, "×"),
+        sets, el("span", { class: "op" }, "×"),
+        cycles, el("span", { class: "op" }, "="),
+        total),
+      el("button", { class: "btn primary", onclick: add }, "추가"));
   }
 
   const dayEntries = state.entries.filter(e => e.d === current.date)
@@ -227,7 +282,9 @@ function renderLog() {
         el("h2", null, "운동 기록 입력"),
         el("div", { class: "row" }, dateInput,
           el("button", { class: "btn", onclick: () => { current.date = iso(new Date()); render(); } }, "오늘"))),
-      el("p", { class: "muted" }, "세트 표기(5x10+5x10)를 그대로 입력하면 자동 합산됩니다. 러닝은 km."),
+      el("p", { class: "muted" },
+        "반복 × 세트 × 사이클을 적으면 총량이 자동 계산됩니다. 세트·사이클은 비우면 1로 봅니다. " +
+        "총량만 알면 마지막 칸에 바로 적어도 됩니다."),
       form),
     el("div", { class: "card" },
       el("h2", null, `${current.date} (${DOW[d.getDay()]}) 기록`),
@@ -401,51 +458,99 @@ function renderMonth() {
       el("div", { class: "tablewrap" }, el("table", { class: "grid" }, header, rows))));
 }
 
-/* ---------- 메트로놈 ----------
- * setInterval만으로는 브라우저가 타이머를 늦춰 박자가 흔들린다. 오디오 시계로
- * 미리 예약(look-ahead)해 두고, 화면 갱신만 타이머로 처리한다. */
-const metronome = {
-  ctx: null, timer: null, nextTick: 0, count: 0, bpm: 30,
-  running: false, wakeLock: null, onCount: null,
+/* ---------- 카운트 음성 ----------
+ * 박자를 '띡' 소리 대신 영어 숫자로 읽어 준다. 세면서 운동하지 않아도 되고,
+ * 몇 회째인지 귀로 바로 알 수 있다.
+ *
+ * 타이밍은 오디오 시계(AudioContext.currentTime)로 잡는다. setInterval은
+ * 화면이 꺼지거나 부하가 걸리면 밀리지만, 오디오 시계는 밀리지 않는다.
+ * 25ms마다 시계를 확인해 도달한 순간에 발음하므로 오차는 사람이 느끼지 못하는 수준이다. */
+const speaker = {
+  voice: null,
+  pick() {
+    if (this.voice) return this.voice;
+    const vs = window.speechSynthesis ? speechSynthesis.getVoices() : [];
+    this.voice = vs.find(v => /^en[-_]US/i.test(v.lang) && !/google/i.test(v.name))
+              || vs.find(v => /^en/i.test(v.lang)) || null;
+    return this.voice;
+  },
+  say(text, rate) {
+    if (!window.speechSynthesis) return;
+    const u = new SpeechSynthesisUtterance(text);
+    const v = this.pick();
+    if (v) u.voice = v;
+    u.lang = "en-US";
+    u.rate = rate || 1.15;
+    u.pitch = 1;
+    speechSynthesis.cancel();      // 이전 발음이 남아 밀리지 않게
+    speechSynthesis.speak(u);
+  },
+};
+if (window.speechSynthesis) speechSynthesis.onvoiceschanged = () => { speaker.voice = null; };
 
-  async start(bpm, onCount) {
+const metronome = {
+  ctx: null, timer: null, nextTick: 0, count: 0, bpm: 30, prep: 15,
+  startAt: 0, phase: "idle",       // idle | prep | run
+  wakeLock: null, onCount: null, onPrep: null,
+
+  async start(bpm, prepSec, onCount, onPrep) {
     this.stop();
-    this.bpm = bpm; this.count = 0; this.onCount = onCount; this.running = true;
+    this.bpm = bpm; this.prep = prepSec; this.count = 0;
+    this.onCount = onCount; this.onPrep = onPrep;
+
     const Ctx = window.AudioContext || window.webkitAudioContext;
     if (!this.ctx) this.ctx = new Ctx();
     await this.ctx.resume();                       // iOS는 사용자 조작 직후에만 열린다
-    try {                                          // 테스트 중 화면이 꺼지지 않게
+    // iOS는 첫 발음이 사용자 조작 안에서 일어나야 이후 발음이 허용된다
+    speaker.say("Get ready", 1);
+    try {
       if (navigator.wakeLock) this.wakeLock = await navigator.wakeLock.request("screen");
     } catch (e) { /* 미지원 기기는 그냥 넘어간다 */ }
-    this.nextTick = this.ctx.currentTime + 0.15;
-    this.timer = setInterval(() => this.schedule(), 25);
+
+    this.phase = "prep";
+    this.startAt = this.ctx.currentTime + this.prep;   // 준비시간 후 1회차
+    this.nextTick = this.startAt;
+    this.lastPrepCall = null;
+    this.timer = setInterval(() => this.tick(), 25);
   },
 
-  schedule() {
+  tick() {
+    const now = this.ctx.currentTime;
+    if (this.phase === "prep") {
+      const left = Math.ceil(this.startAt - now);
+      if (left !== this.lastPrepCall) {
+        this.lastPrepCall = left;
+        if (this.onPrep) this.onPrep(Math.max(0, left));
+        if (left > 0 && left <= 3) this.beep(now, 900);   // 3·2·1 짧은 신호음
+      }
+      if (now < this.startAt) return;
+      this.phase = "run";
+    }
     const interval = 60 / this.bpm;
-    while (this.nextTick < this.ctx.currentTime + 0.2) {
-      this.beep(this.nextTick);
-      this.nextTick += interval;
+    while (now >= this.nextTick) {
       this.count++;
+      speaker.say(String(this.count));
       if (this.onCount) this.onCount(this.count);
+      this.nextTick += interval;
     }
   },
 
-  beep(when) {
+  beep(when, freq) {
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
-    osc.frequency.value = this.count % 10 === 9 ? 1600 : 1000;  // 10회마다 높은 소리
+    osc.frequency.value = freq;
     gain.gain.setValueAtTime(0.0001, when);
-    gain.gain.exponentialRampToValueAtTime(0.6, when + 0.002);
-    gain.gain.exponentialRampToValueAtTime(0.0001, when + 0.07);
+    gain.gain.exponentialRampToValueAtTime(0.5, when + 0.002);
+    gain.gain.exponentialRampToValueAtTime(0.0001, when + 0.09);
     osc.connect(gain); gain.connect(this.ctx.destination);
-    osc.start(when); osc.stop(when + 0.08);
+    osc.start(when); osc.stop(when + 0.1);
   },
 
   stop() {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     if (this.wakeLock) { this.wakeLock.release().catch(() => {}); this.wakeLock = null; }
-    this.running = false;
+    if (window.speechSynthesis) speechSynthesis.cancel();
+    this.phase = "idle";
     return this.count;
   },
 };
@@ -474,31 +579,42 @@ function renderTest() {
     TEST_EXERCISES.map(t =>
       el("option", { value: t.key, ...(t.key === current.testEx ? { selected: "" } : {}) }, t.name)));
   const bpmInput = el("input", { type: "number", min: "10", max: "120", step: "5",
-    value: current.testBpm, style: "width:84px",
+    value: current.testBpm, style: "width:76px",
     onchange: ev => { current.testBpm = Math.max(10, Math.min(120, +ev.target.value || 30)); } });
+  const prepInput = el("input", { type: "number", min: "0", max: "60", step: "5",
+    value: current.testPrep, style: "width:76px",
+    onchange: ev => { current.testPrep = Math.max(0, Math.min(60, +ev.target.value || 0)); } });
 
   const counter = el("div", { class: "counter" }, "0");
-  const hint = el("p", { class: "muted" },
-    "시작을 누르면 일정한 간격으로 소리가 납니다. 소리 한 번에 1회씩 맞춰서 하고, " +
-    "박자를 놓치는 순간 정지를 누르세요. 그때까지의 횟수가 기록됩니다. 10회마다 높은 소리가 납니다.");
+  const IDLE_HINT = "시작을 누르면 준비시간이 흐른 뒤, 영어로 숫자를 세어 줍니다. " +
+    "숫자 하나에 1회씩 맞춰서 하고, 박자를 놓치는 순간 정지를 누르세요. 그때까지의 횟수가 기록됩니다.";
+  const hint = el("p", { class: "muted" }, IDLE_HINT);
 
   const startBtn = el("button", { class: "btn primary", style: "flex:1" }, "시작");
   const stopBtn = el("button", { class: "btn danger", style: "flex:1", disabled: "" }, "정지 · 기록");
 
   startBtn.addEventListener("click", async () => {
-    counter.textContent = "0";
+    counter.textContent = current.testPrep > 0 ? String(current.testPrep) : "0";
+    counter.classList.toggle("prep", current.testPrep > 0);
     startBtn.disabled = true; stopBtn.removeAttribute("disabled");
-    hint.textContent = `${current.testBpm} BPM (1회당 ${(60 / current.testBpm).toFixed(1)}초) — 소리에 맞춰 진행하세요.`;
+    hint.textContent = `${current.testBpm} BPM · 1회당 ${(60 / current.testBpm).toFixed(1)}초. 준비하세요.`;
     try {
-      await metronome.start(current.testBpm, n => { counter.textContent = String(n); });
+      await metronome.start(current.testBpm, current.testPrep,
+        n => { counter.classList.remove("prep"); counter.textContent = String(n); },
+        left => {
+          counter.textContent = String(left);
+          if (left === 0) hint.textContent = "시작! 숫자에 맞춰 진행하세요.";
+        });
     } catch (e) {
       startBtn.disabled = false; stopBtn.setAttribute("disabled", "");
+      counter.classList.remove("prep");
       hint.textContent = "소리를 재생할 수 없습니다. 무음 모드를 해제하고 다시 시도해 보세요.";
     }
   });
   stopBtn.addEventListener("click", () => {
     const reps = metronome.stop();
     startBtn.disabled = false; stopBtn.setAttribute("disabled", "");
+    counter.classList.remove("prep");
     if (reps > 0 && confirm(`${testName(current.testEx)} ${reps}회 (${current.testBpm} BPM)로 기록할까요?`)) {
       saveTest(current.testEx, reps, current.testBpm);
     }
@@ -557,9 +673,10 @@ function renderTest() {
 
   app.append(
     el("div", { class: "card" },
-      el("div", { class: "row spread" },
-        el("h2", null, "최대반복 테스트"),
-        el("div", { class: "row" }, exSelect, bpmInput, el("span", { class: "muted" }, "BPM"))),
+      el("h2", null, "최대반복 테스트"),
+      el("div", { class: "row" }, exSelect,
+        bpmInput, el("span", { class: "muted" }, "BPM"),
+        prepInput, el("span", { class: "muted" }, "초 준비")),
       counter,
       el("div", { class: "row", style: "margin:10px 0" }, startBtn, stopBtn),
       hint),
@@ -594,57 +711,198 @@ function renderTest() {
         "월 1회 정도, 컨디션이 비슷한 시간대에 측정하면 총량 그래프와 나란히 놓고 볼 수 있습니다.")));
 }
 
-/* ---------- 추이 탭 ---------- */
+/* ---------- 추이 탭 ----------
+ * 축을 두 방향으로 바꿔 볼 수 있다.
+ *   집계 단위: 주별 / 월별 / 연별
+ *   대상: 종목 하나를 골라 시간에 따라  |  전체 종목을 한 기간 안에서 비교
+ */
+
+// 선택한 단위로 구간 목록을 만든다. 각 구간은 [from, to] ISO 날짜 범위.
+function periodsOf(unit, year) {
+  const out = [];
+  if (unit === "year") {
+    const ys = [...new Set(state.entries.map(e => +e.d.slice(0, 4)))].sort();
+    for (const y of ys)
+      out.push({ label: y + "년", short: String(y), from: `${y}-01-01`, to: `${y}-12-31` });
+    return out;
+  }
+  if (unit === "month") {
+    for (let m = 0; m < 12; m++) {
+      const last = new Date(year, m + 1, 0).getDate();
+      out.push({ label: `${year}년 ${m + 1}월`, short: `${m + 1}월`,
+                 from: iso(new Date(year, m, 1)), to: iso(new Date(year, m, last)) });
+    }
+    return out;
+  }
+  let mon = mondayOf(new Date(year, 0, 4));       // ISO 1주차의 월요일
+  while (mon.getFullYear() <= year) {
+    const sun = addDays(mon, 6);
+    out.push({ label: `${iso(mon)} ~ ${iso(sun)}`, short: `${mon.getMonth() + 1}월`,
+               from: iso(mon), to: iso(sun), mon: new Date(mon) });
+    mon = addDays(mon, 7);
+  }
+  return out;
+}
+
 function renderTrend() {
   const years = [...new Set(state.entries.map(e => +e.d.slice(0, 4)))].sort();
-  if (!years.includes(current.trendYear)) current.trendYear = years[years.length - 1] || new Date().getFullYear();
+  if (years.length && !years.includes(current.trendYear))
+    current.trendYear = years[years.length - 1];
+
+  const unitSelect = el("select", { onchange: ev => { current.trendUnit = ev.target.value; render(); } },
+    [["week", "주별"], ["month", "월별"], ["year", "연별"]].map(([v, n]) =>
+      el("option", { value: v, ...(v === current.trendUnit ? { selected: "" } : {}) }, n)));
+
+  const modeSelect = el("select", { onchange: ev => { current.trendMode = ev.target.value; render(); } },
+    [["single", "종목 하나"], ["all", "전체 비교"]].map(([v, n]) =>
+      el("option", { value: v, ...(v === current.trendMode ? { selected: "" } : {}) }, n)));
 
   const exSelect = el("select", { onchange: ev => { current.trendEx = ev.target.value; render(); } },
     [...DERIVED, ...EXERCISES.filter(e => !e.legacy)].map(e =>
       el("option", { value: e.key, ...(e.key === current.trendEx ? { selected: "" } : {}) }, e.name)));
+
   const yearSelect = el("select", { onchange: ev => { current.trendYear = +ev.target.value; render(); } },
     years.map(y => el("option", { value: y, ...(y === current.trendYear ? { selected: "" } : {}) }, y + "년")));
 
-  // 선택 연도의 주간 합계 (연도 내 모든 월요일)
-  const meta = EX_BY_KEY[current.trendEx];
-  let mon = mondayOf(new Date(current.trendYear, 0, 4)); // ISO 1주차의 월요일
-  const weeks = [];
-  while (mon.getFullYear() <= current.trendYear) {
-    weeks.push({ mon: new Date(mon), v: weekSums(mon)[current.trendEx] || 0 });
-    mon = addDays(mon, 7);
-  }
-  const max = Math.max(1, ...weeks.map(w => w.v));
+  const periods = periodsOf(current.trendUnit, current.trendYear);
+  const sums = periods.map(p => sumByExercise(entriesBetween(p.from, p.to)));
 
-  // SVG 막대 차트
+  const controls = el("div", { class: "row", style: "gap:6px" },
+    unitSelect, modeSelect,
+    current.trendMode === "single" ? exSelect : null,
+    current.trendUnit !== "year" && years.length ? yearSelect : null);
+
+  const chartCard = current.trendMode === "single"
+    ? singleChart(periods, sums)
+    : allChart(periods, sums);
+
+  app.append(
+    el("div", { class: "card" },
+      el("h2", null, "추이 · 비교"),
+      controls,
+      chartCard),
+    heatmapCard(),
+    periodTable(periods, sums));
+}
+
+/* 종목 하나를 시간축으로 */
+function singleChart(periods, sums) {
+  const meta = EX_BY_KEY[current.trendEx];
+  const vals = sums.map(s => s[current.trendEx] || 0);
+  const max = Math.max(1, ...vals);
   const W = 820, H = 300, padL = 68, padB = 42, padT = 14;
-  const bw = (W - padL - 8) / weeks.length;
-  const svgParts = [];
-  svgParts.push(`<line class="axis" x1="${padL}" y1="${H - padB}" x2="${W}" y2="${H - padB}"/>`);
+  const bw = (W - padL - 8) / Math.max(1, periods.length);
+  const parts = [`<line class="axis" x1="${padL}" y1="${H - padB}" x2="${W}" y2="${H - padB}"/>`];
   for (const frac of [0.25, 0.5, 0.75, 1]) {
     const y = H - padB - (H - padB - padT) * frac;
-    svgParts.push(`<line class="axis" x1="${padL}" y1="${y}" x2="${W}" y2="${y}" stroke-dasharray="3 4"/>`);
-    svgParts.push(`<text x="${padL - 7}" y="${y + 5}" text-anchor="end">${fmtNum(max * frac, meta.decimal)}</text>`);
+    parts.push(`<line class="axis" x1="${padL}" y1="${y}" x2="${W}" y2="${y}" stroke-dasharray="3 4"/>`);
+    parts.push(`<text x="${padL - 7}" y="${y + 5}" text-anchor="end">${fmtNum(max * frac, meta.decimal)}</text>`);
   }
-  weeks.forEach((w, i) => {
-    const h = (H - padB - padT) * (w.v / max);
+  periods.forEach((p, i) => {
+    const v = vals[i];
     const x = padL + i * bw + 1;
-    if (w.v > 0)
-      svgParts.push(`<rect class="bar-rect" x="${x}" y="${H - padB - h}" width="${Math.max(1, bw - 2)}" height="${h}" rx="1.5"><title>${iso(w.mon)} 주 · ${fmtNum(w.v, meta.decimal)} ${meta.unit}</title></rect>`);
-    const m = w.mon.getMonth();
-    if (w.mon.getDate() <= 7 && m % 2 === 0)  // 두 달 간격 라벨 (겹침 방지)
-      svgParts.push(`<text x="${x}" y="${H - padB + 20}" text-anchor="middle">${m + 1}월</text>`);
+    if (v > 0) {
+      const h = (H - padB - padT) * (v / max);
+      parts.push(`<rect class="bar-rect" x="${x}" y="${H - padB - h}" width="${Math.max(1, bw - 2)}" height="${h}" rx="1.5"><title>${p.label} · ${fmtNum(v, meta.decimal)} ${meta.unit}</title></rect>`);
+    }
+    if (labelAt(p, i, periods.length))
+      parts.push(`<text x="${x + bw / 2}" y="${H - padB + 20}" text-anchor="middle">${p.short}</text>`);
   });
   const chart = el("div");
-  chart.innerHTML = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img">${svgParts.join("")}</svg>`;
+  chart.innerHTML = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img">${parts.join("")}</svg>`;
 
-  const yearTotal = weeks.reduce((a, w) => a + w.v, 0);
-  const activeWeeks = weeks.filter(w => w.v > 0).length;
-  const best = weeks.reduce((a, w) => w.v > a.v ? w : a, { v: 0 });
+  const total = vals.reduce((a, b) => a + b, 0);
+  const active = vals.filter(v => v > 0).length;
+  let bestI = 0;
+  vals.forEach((v, i) => { if (v > vals[bestI]) bestI = i; });
+  return el("div", null, chart,
+    el("div", { class: "legend" },
+      el("span", null, `합계 ${fmtNum(total, meta.decimal)} ${meta.unit}`),
+      el("span", null, `기록된 구간 ${active}/${periods.length}`),
+      vals[bestI] > 0
+        ? el("span", null, `최고 ${fmtNum(vals[bestI], meta.decimal)} ${meta.unit} (${periods[bestI].label})`)
+        : null));
+}
 
-  // 연간 히트맵 — 하루하루의 부하를 5단계 농도로. 꾸준함이 한눈에 보인다.
+/* 전체 종목을 한 구간 안에서 비교 — 단위가 '회'로 같은 것만 쌓는다.
+ * 러닝(km)은 단위가 달라 함께 쌓으면 잘못된 그림이 되므로 아래 표에서 본다. */
+function allChart(periods, sums) {
+  const totals = sums.map(s => STACK_METRICS.reduce((a, k) => a + (s[k] || 0), 0));
+  const max = Math.max(1, ...totals);
+  const W = 820, H = 300, padL = 68, padB = 42, padT = 14;
+  const bw = (W - padL - 8) / Math.max(1, periods.length);
+  const parts = [`<line class="axis" x1="${padL}" y1="${H - padB}" x2="${W}" y2="${H - padB}"/>`];
+  for (const frac of [0.25, 0.5, 0.75, 1]) {
+    const y = H - padB - (H - padB - padT) * frac;
+    parts.push(`<line class="axis" x1="${padL}" y1="${y}" x2="${W}" y2="${y}" stroke-dasharray="3 4"/>`);
+    parts.push(`<text x="${padL - 7}" y="${y + 5}" text-anchor="end">${fmtNum(max * frac)}</text>`);
+  }
+  periods.forEach((p, i) => {
+    const x = padL + i * bw + 1;
+    let acc = 0;
+    STACK_METRICS.forEach((k, si) => {
+      const v = sums[i][k] || 0;
+      if (v <= 0) return;
+      const h = (H - padB - padT) * (v / max);
+      acc += h;
+      parts.push(`<rect class="s${si}" x="${x}" y="${H - padB - acc}" width="${Math.max(1, bw - 2)}" height="${h}"><title>${p.label} · ${exName(k)} ${fmtNum(v)}회</title></rect>`);
+    });
+    if (labelAt(p, i, periods.length))
+      parts.push(`<text x="${x + bw / 2}" y="${H - padB + 20}" text-anchor="middle">${p.short}</text>`);
+  });
+  const chart = el("div");
+  chart.innerHTML = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img">${parts.join("")}</svg>`;
+
+  return el("div", null, chart,
+    el("div", { class: "legend" },
+      STACK_METRICS.map((k, si) =>
+        el("span", { class: "serie" }, el("i", { class: `sw s${si}` }), exName(k)))),
+    el("p", { class: "muted", style: "margin-bottom:0" },
+      "단위가 '회'인 종목만 쌓아 표시합니다. 러닝(km)은 아래 표에서 확인하세요."));
+}
+
+// 구간이 많으면 라벨이 겹치므로 솎아낸다
+function labelAt(p, i, n) {
+  if (n <= 14) return true;
+  if (p.mon) return p.mon.getDate() <= 7 && p.mon.getMonth() % 2 === 0;
+  return i % Math.ceil(n / 12) === 0;
+}
+
+/* 구간 × 종목 표 — 어떤 축으로 보든 숫자로 확인할 수 있게 */
+function periodTable(periods, sums) {
+  const rows = periods.map((p, i) => {
+    const empty = MONTH_COLS.every(k => !(sums[i][k] > 0));
+    if (empty && current.trendUnit === "week") return null;   // 빈 주가 많아 표가 길어지는 것 방지
+    return el("tr", null, el("td", null, p.short === p.label ? p.label : p.label),
+      MONTH_COLS.map(k => {
+        const v = sums[i][k] || 0;
+        return el("td", { class: v ? (DERIVED.some(d => d.key === k) ? "derived" : "") : "zero" },
+          v ? fmtNum(v, EX_BY_KEY[k].decimal) : "·");
+      }));
+  }).filter(Boolean);
+
+  const tot = {};
+  for (const s of sums) for (const k of MONTH_COLS) tot[k] = (tot[k] || 0) + (s[k] || 0);
+  rows.push(el("tr", { class: "total" }, el("td", null, "합계"),
+    MONTH_COLS.map(k => el("td", null, fmtNum(tot[k] || 0, EX_BY_KEY[k].decimal)))));
+
+  return el("div", { class: "card" },
+    el("h2", null, "구간별 숫자"),
+    el("div", { class: "tablewrap" },
+      el("table", { class: "grid" },
+        el("tr", null, el("th", null, "구간"), MONTH_COLS.map(k => el("th", null, exName(k)))),
+        rows)),
+    current.trendUnit === "week"
+      ? el("p", { class: "muted", style: "margin-bottom:0" }, "기록이 없는 주는 생략했습니다.")
+      : null);
+}
+
+/* 연간 히트맵 */
+function heatmapCard() {
+  const year = current.trendYear;
   const loadByDay = {};
   for (const e of state.entries) {
-    if (!e.d.startsWith(String(current.trendYear))) continue;
+    if (!e.d.startsWith(String(year))) continue;
     loadByDay[e.d] = (loadByDay[e.d] || 0) + (e.ex === "running" ? e.v * RUNNING_LOAD_PER_KM : e.v);
   }
   const dayLoads = Object.values(loadByDay).sort((a, b) => a - b);
@@ -654,36 +912,31 @@ function renderTrend() {
   const level = v => !v ? 0 : v <= cuts[0] ? 1 : v <= cuts[1] ? 2 : v <= cuts[2] ? 3 : 4;
 
   const CELL = 15, GAP = 3;
-  const yStart = new Date(current.trendYear, 0, 1);
-  const yEnd = new Date(current.trendYear, 11, 31);
+  const yStart = new Date(year, 0, 1), yEnd = new Date(year, 11, 31);
   const firstCol = mondayOf(yStart);
   const numCols = Math.round((mondayOf(yEnd) - firstCol) / (7 * 864e5)) + 1;
-  const hmW = 34 + numCols * (CELL + GAP);
-  const hmH = 22 + 7 * (CELL + GAP);
+  const hmW = 34 + numCols * (CELL + GAP), hmH = 22 + 7 * (CELL + GAP);
   const hm = [];
-  for (let r = 0; r < 7; r++) {          // 월요일 시작이므로 0=월 … 6=일
+  for (let r = 0; r < 7; r++)
     if (r % 2 === 0)
       hm.push(`<text x="0" y="${22 + r * (CELL + GAP) + CELL - 3}" font-size="11">${DOW[(r + 1) % 7]}</text>`);
-  }
   let activeDays = 0;
   for (let c = 0; c < numCols; c++) {
     for (let r = 0; r < 7; r++) {
       const d = addDays(firstCol, c * 7 + r);
-      if (d.getFullYear() !== current.trendYear) continue;
+      if (d.getFullYear() !== year) continue;
       const key = iso(d);
       const v = loadByDay[key] || 0;
       if (v > 0) activeDays++;
-      const x = 34 + c * (CELL + GAP), y = 22 + r * (CELL + GAP);
-      hm.push(`<rect class="hm l${level(v)}" x="${x}" y="${y}" width="${CELL}" height="${CELL}" rx="3"><title>${key} (${DOW[d.getDay()]}) · ${v ? "부하 " + fmtNum(v) : "휴식"}</title></rect>`);
+      hm.push(`<rect class="hm l${level(v)}" x="${34 + c * (CELL + GAP)}" y="${22 + r * (CELL + GAP)}" width="${CELL}" height="${CELL}" rx="3"><title>${key} (${DOW[d.getDay()]}) · ${v ? "부하 " + fmtNum(v) : "휴식"}</title></rect>`);
     }
     const d1 = addDays(firstCol, c * 7);
-    if (d1.getDate() <= 7 && d1.getFullYear() === current.trendYear)
+    if (d1.getDate() <= 7 && d1.getFullYear() === year)
       hm.push(`<text x="${34 + c * (CELL + GAP)}" y="14" font-size="11">${d1.getMonth() + 1}월</text>`);
   }
   const heat = el("div", { class: "tablewrap" });
   heat.innerHTML = `<svg class="heatmap" viewBox="0 0 ${hmW} ${hmH}" width="${hmW}" role="img">${hm.join("")}</svg>`;
 
-  // 최장 연속 운동일
   let streak = 0, bestStreak = 0;
   for (let d = new Date(yStart); d <= yEnd; d = addDays(d, 1)) {
     if (loadByDay[iso(d)]) { streak++; bestStreak = Math.max(bestStreak, streak); }
@@ -691,42 +944,17 @@ function renderTrend() {
   }
   const daysInYear = Math.round((yEnd - yStart) / 864e5) + 1;
 
-  // 연도별 비교 표
-  const cmpRows = years.map(y => {
-    const sums = sumByExercise(state.entries.filter(e => e.d.startsWith(String(y))));
-    return el("tr", null, el("td", null, y + "년"),
-      [...DERIVED, EX_BY_KEY.pullup, EX_BY_KEY.running, EX_BY_KEY.abs].map(m =>
-        el("td", null, fmtNum(sums[m.key] || 0, m.decimal))));
-  });
-
-  app.append(
-    el("div", { class: "card" },
-      el("div", { class: "row spread" },
-        el("h2", null, "주간 운동량 추이"),
-        el("div", { class: "row" }, exSelect, yearSelect)),
-      chart,
-      el("div", { class: "legend" },
-        el("span", null, `합계(주 단위 집계) ${fmtNum(yearTotal, meta.decimal)} ${meta.unit}`),
-        el("span", null, `운동한 주 ${activeWeeks}/${weeks.length}주`),
-        best.v ? el("span", null, `최고 주간 ${fmtNum(best.v, meta.decimal)} ${meta.unit} (${iso(best.mon)} 주)`) : null)),
-    el("div", { class: "card" },
-      el("div", { class: "row spread" },
-        el("h2", null, `${current.trendYear}년 히트맵`),
-        el("span", { class: "muted" }, `운동일 ${activeDays}일 / ${daysInYear}일 · 최장 연속 ${bestStreak}일`)),
-      heat,
-      el("div", { class: "row", style: "gap:6px; margin-top:8px; font-size:12px" },
-        el("span", { class: "muted" }, "적음"),
-        [1, 2, 3, 4].map(l => el("span", { class: `swatch l${l}` })),
-        el("span", { class: "muted" }, "많음")),
-      el("p", { class: "muted", style: "margin-bottom:0" },
-        "칸 하나가 하루입니다. 색이 진할수록 그날 부하가 큽니다.")),
-    el("div", { class: "card" },
-      el("h2", null, "연도별 비교"),
-      el("div", { class: "tablewrap" },
-        el("table", { class: "grid" },
-          el("tr", null, el("th", null, "연도"),
-            [...DERIVED, EX_BY_KEY.pullup, EX_BY_KEY.running, EX_BY_KEY.abs].map(m => el("th", null, m.name))),
-          cmpRows))));
+  return el("div", { class: "card" },
+    el("div", { class: "row spread" },
+      el("h2", null, `${year}년 히트맵`),
+      el("span", { class: "muted" }, `운동일 ${activeDays}일 / ${daysInYear}일 · 최장 연속 ${bestStreak}일`)),
+    heat,
+    el("div", { class: "row", style: "gap:6px; margin-top:8px; font-size:12px" },
+      el("span", { class: "muted" }, "적음"),
+      [1, 2, 3, 4].map(l => el("span", { class: `swatch l${l}` })),
+      el("span", { class: "muted" }, "많음")),
+    el("p", { class: "muted", style: "margin-bottom:0" },
+      "칸 하나가 하루입니다. 색이 진할수록 그날 부하가 큽니다."));
 }
 
 /* ---------- 데이터 탭 ---------- */

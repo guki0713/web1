@@ -122,12 +122,25 @@ button.btn:active { transform: translateY(1px); }
 }
 .entry-row label { font-size: 14px; }
 .entry-row input { min-width: 0; }
-.entry-grid .preview { font-size: 12px; color: var(--dim); margin-top: -4px; }
-.entry-grid .preview:empty { display: none; }
+/* 반복 × 세트 × 사이클 = 총량 한 줄. 숫자 칸은 좁게, 총량은 강조. */
+.numline { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.numline .num {
+  flex: 1 1 0;
+  min-width: 0;
+  width: 100%;
+  padding: 8px 4px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.numline .num.grow { flex: 1 1 100%; text-align: left; padding-left: 10px; }
+.numline .num.total { font-weight: 700; border-color: var(--accent); }
+.numline .op { color: var(--dim); font-size: 13px; flex: 0 0 auto; }
 /* 좁은 화면: 종목명을 입력칸 위로 올려 가로 넘침을 없앤다 */
 @media (max-width: 520px) {
   .entry-row { grid-template-columns: minmax(0, 1fr) auto; }
   .entry-row label { grid-column: 1 / -1; font-weight: 600; }
+  .numline .num { padding: 8px 2px; font-size: 14px; }
+  .numline { gap: 2px; }
 }
 .loglist { list-style: none; margin: 0; padding: 0; }
 .loglist li {
@@ -248,6 +261,7 @@ table.grid td.derived { color: var(--accent); }
   color: var(--accent);
   padding: 6px 0;
 }
+.counter.prep { color: var(--dim); }   /* 준비시간 카운트다운은 눌러서 구분 */
 button.btn.tiny { padding: 3px 8px; font-size: 12.5px; }
 button.btn[disabled] { opacity: .4; cursor: default; }
 
@@ -276,6 +290,28 @@ button.btn[disabled] { opacity: .4; cursor: default; }
 .chart { width: 100%; height: auto; display: block; }
 .chart .trendline { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; }
 .chart .dot { fill: var(--accent); }
+
+/* 전체 비교용 계열 색 — 의미색(증감)과 겹치지 않는 네 가지 */
+:root, :root[data-theme="light"] {
+  --s0: #0e7f9b;  /* 푸시업 */
+  --s1: #5560c4;  /* 턱걸이 */
+  --s2: #b3741c;  /* 하체 */
+  --s3: #a8496b;  /* 복근 */
+}
+@media (prefers-color-scheme: dark) {
+  :root { --s0: #38b3d0; --s1: #8b96ee; --s2: #d8a544; --s3: #dd8fa8; }
+}
+:root[data-theme="dark"] { --s0: #38b3d0; --s1: #8b96ee; --s2: #d8a544; --s3: #dd8fa8; }
+.chart .s0 { fill: var(--s0); }
+.chart .s1 { fill: var(--s1); }
+.chart .s2 { fill: var(--s2); }
+.chart .s3 { fill: var(--s3); }
+.legend .serie { display: inline-flex; align-items: center; gap: 5px; }
+.legend .sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+.legend .sw.s0 { background: var(--s0); }
+.legend .sw.s1 { background: var(--s1); }
+.legend .sw.s2 { background: var(--s2); }
+.legend .sw.s3 { background: var(--s3); }
 .chart .axis { stroke: var(--line); stroke-width: 1; }
 /* viewBox 좌표계 기준 크기 — 폰에서 축소돼도 읽히도록 크게 잡는다 */
 .chart text { fill: var(--dim); font-size: 15px; font-variant-numeric: tabular-nums; }
