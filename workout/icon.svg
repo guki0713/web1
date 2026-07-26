@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#0c1116"/>
+  <!-- 주간 운동량 막대: 이 앱이 보여주는 것 그대로 -->
+  <g fill="#38b3d0">
+    <rect x="104" y="300" width="52" height="108" rx="10"/>
+    <rect x="176" y="240" width="52" height="168" rx="10"/>
+    <rect x="248" y="164" width="52" height="244" rx="10"/>
+    <rect x="320" y="212" width="52" height="196" rx="10"/>
+  </g>
+  <rect x="88" y="128" width="336" height="10" rx="5" fill="#38b3d0" opacity=".35"/>
+</svg>

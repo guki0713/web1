@@ -10,7 +10,9 @@ CSS·JS를 HTML 안에 그대로 삽입하므로, 결과물 1개만 있으면 �
 """
 
 import argparse
+import hashlib
 import pathlib
+import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -48,6 +50,26 @@ def strip_skeleton(html):
     return f"<title>{title}</title>\n" + body.strip() + "\n"
 
 
+def stamp_service_worker(html):
+    """서비스 워커의 캐시 이름에 index.html 내용 해시를 박아 넣는다.
+
+    앱이 바뀌면 캐시 이름이 바뀌고, 서비스 워커는 activate에서 옛 캐시를 지운다.
+    이 갱신을 잊으면 사용자 기기에 옛 버전이 계속 남으므로 빌드에서 자동 처리한다.
+    """
+    sw_path = ROOT / "workout" / "sw.js"
+    if not sw_path.exists():
+        return
+    digest = hashlib.sha256(html.encode("utf-8")).hexdigest()[:12]
+    text = sw_path.read_text(encoding="utf-8")
+    new = re.sub(r'const CACHE = "workout-[^"]*";',
+                 f'const CACHE = "workout-{digest}";', text, count=1)
+    if new == text and f'workout-{digest}' not in text:
+        sys.exit("삽입 실패: sw.js 의 CACHE 선언을 찾지 못했습니다")
+    if new != text:
+        sw_path.write_text(new, encoding="utf-8")
+        print(f"{sw_path} 캐시 버전 → workout-{digest}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -61,6 +83,8 @@ def main():
     out = pathlib.Path(args.output)
     out.write_text(html, encoding="utf-8")
     print(f"{out} 생성 ({out.stat().st_size:,} bytes)")
+    if not args.artifact:
+        stamp_service_worker(html)
 
 
 if __name__ == "__main__":

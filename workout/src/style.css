@@ -64,14 +64,18 @@ header h1 { margin: 0 0 8px; font-size: 20px; }
 #tabs { display: flex; gap: 4px; overflow-x: auto; }
 #tabs button {
   flex: 1;
-  min-width: 56px;
-  padding: 8px 10px;
+  min-width: 0;
+  padding: 8px 6px;
   border: none;
   border-bottom: 2px solid transparent;
   background: none;
   color: var(--dim);
   font-size: 15px;
+  white-space: nowrap;   /* 탭 이름이 두 줄로 쪼개지지 않게 */
   cursor: pointer;
+}
+@media (max-width: 430px) {
+  #tabs button { font-size: 13.5px; padding: 8px 3px; }
 }
 #tabs button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 700; }
 main { max-width: 860px; margin: 0 auto; padding: 14px; }
@@ -197,8 +201,81 @@ table.grid td.derived { color: var(--accent); }
 .sun { color: var(--bad); }
 .sat { color: var(--accent); }
 
+/* 훈련 부하 */
+.badge {
+  font-size: 12.5px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+.badge.good { color: var(--good); }
+.badge.warn { color: var(--warn); }
+.badge.bad  { color: var(--bad); }
+.badge.muted { color: var(--dim); }
+.gauge {
+  position: relative;
+  height: 9px;
+  background: var(--line);
+  border-radius: 5px;
+  margin: 10px 0 4px;
+}
+.gauge .opt {           /* 적정 구간 0.8~1.3 (전체 0~2.0 기준) */
+  position: absolute;
+  left: 40%; width: 25%;
+  top: 0; bottom: 0;
+  background: var(--good);
+  opacity: .35;
+  border-radius: 2px;
+}
+.gauge b {
+  position: absolute;
+  top: -4px;
+  width: 3px; height: 17px;
+  margin-left: -1.5px;
+  background: var(--text);
+  border-radius: 2px;
+}
+
+/* 테스트 탭 */
+.counter {
+  font-size: 76px;
+  font-weight: 800;
+  text-align: center;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+  color: var(--accent);
+  padding: 6px 0;
+}
+button.btn.tiny { padding: 3px 8px; font-size: 12.5px; }
+button.btn[disabled] { opacity: .4; cursor: default; }
+
+/* 연간 히트맵 — 좁은 화면에서는 줄이지 말고 가로로 넘겨 본다.
+   칸을 줄이면 색 차이를 알아볼 수 없어 지표로서 쓸모가 없어진다. */
+.heatmap { display: block; height: auto; }
+.heatmap text { fill: var(--dim); }
+.hm { fill: var(--line); }
+.hm.l0 { fill: var(--line); opacity: .5; }
+.hm.l1 { fill: var(--accent); opacity: .3; }
+.hm.l2 { fill: var(--accent); opacity: .5; }
+.hm.l3 { fill: var(--accent); opacity: .75; }
+.hm.l4 { fill: var(--accent); opacity: 1; }
+.swatch {
+  display: inline-block;
+  width: 13px; height: 13px;
+  border-radius: 3px;
+  background: var(--accent);
+}
+.swatch.l1 { opacity: .3; }
+.swatch.l2 { opacity: .5; }
+.swatch.l3 { opacity: .75; }
+.swatch.l4 { opacity: 1; }
+
 /* 차트 */
 .chart { width: 100%; height: auto; display: block; }
+.chart .trendline { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; }
+.chart .dot { fill: var(--accent); }
 .chart .axis { stroke: var(--line); stroke-width: 1; }
 /* viewBox 좌표계 기준 크기 — 폰에서 축소돼도 읽히도록 크게 잡는다 */
 .chart text { fill: var(--dim); font-size: 15px; font-variant-numeric: tabular-nums; }
