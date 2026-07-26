@@ -136,25 +136,6 @@ function acwrZone(ratio) {
   return                   { label: "과부하 위험", cls: "bad",  desc: "급격한 증가는 부상 위험을 높입니다. 회복에 무게를 두세요." };
 }
 
-/* ---------- 세트 표기 파서: "5x10+5x10", "5×10", "3.07", "200+200" ---------- */
-function parseSets(text) {
-  const norm = String(text).trim().replace(/×/g, "x").replace(/\s+/g, "").replace(/,/g, "");
-  if (!norm) return null;
-  if (!/^[0-9.x+]+$/.test(norm)) return null;
-  let total = 0;
-  for (const term of norm.split("+")) {
-    if (!term) return null;
-    const factors = term.split("x");
-    let prod = 1;
-    for (const f of factors) {
-      if (!/^\d+(\.\d+)?$/.test(f)) return null;
-      prod *= parseFloat(f);
-    }
-    total += prod;
-  }
-  return Math.round(total * 1000) / 1000;
-}
-
 /* ---------- 뷰 라우팅 ---------- */
 const app = document.getElementById("app");
 const views = { log: renderLog, week: renderWeek, month: renderMonth,

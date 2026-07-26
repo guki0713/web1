@@ -25,7 +25,6 @@
   --text: #12181f;
   --dim: #5c6b7d;
   --accent: #0e7f9b;
-  --accent-soft: #cfe6ed;
   --good: #237f52;
   --warn: #9a6a12;
   --bad: #b23b3b;
@@ -40,7 +39,6 @@
     --text: #e4eaf0;
     --dim: #8695a5;
     --accent: #38b3d0;
-    --accent-soft: #17323c;
     --good: #4cc48b;
     --warn: #d8a544;
     --bad: #e0736f;
@@ -54,7 +52,6 @@
   --text: #e4eaf0;
   --dim: #8695a5;
   --accent: #38b3d0;
-  --accent-soft: #17323c;
   --good: #4cc48b;
   --warn: #d8a544;
   --bad: #e0736f;
@@ -524,25 +521,6 @@ function acwrZone(ratio) {
   if (ratio <= 1.3) return { label: "적정",       cls: "good", desc: "평소 수준에서 무리 없이 늘려가는 구간입니다." };
   if (ratio <= 1.5) return { label: "주의",       cls: "warn", desc: "증가 속도가 빠릅니다. 다음 주는 유지하거나 조금 줄이는 편이 안전합니다." };
   return                   { label: "과부하 위험", cls: "bad",  desc: "급격한 증가는 부상 위험을 높입니다. 회복에 무게를 두세요." };
-}
-
-/* ---------- 세트 표기 파서: "5x10+5x10", "5×10", "3.07", "200+200" ---------- */
-function parseSets(text) {
-  const norm = String(text).trim().replace(/×/g, "x").replace(/\s+/g, "").replace(/,/g, "");
-  if (!norm) return null;
-  if (!/^[0-9.x+]+$/.test(norm)) return null;
-  let total = 0;
-  for (const term of norm.split("+")) {
-    if (!term) return null;
-    const factors = term.split("x");
-    let prod = 1;
-    for (const f of factors) {
-      if (!/^\d+(\.\d+)?$/.test(f)) return null;
-      prod *= parseFloat(f);
-    }
-    total += prod;
-  }
-  return Math.round(total * 1000) / 1000;
 }
 
 /* ---------- 뷰 라우팅 ---------- */
