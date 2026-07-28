@@ -71,13 +71,11 @@ function migrate(s) {
   if (!Array.isArray(s.entries)) s.entries = [];
   if (!s.goals) s.goals = {};
   if (!Array.isArray(s.tests)) s.tests = [];
-  if (!Array.isArray(s.health)) s.health = [];   // 워치에서 가져온 건강 지표
-  if (!s.profile) s.profile = {};                // 나이·최대심박 등
   return s;
 }
 function seedState() {
   const hist = (window.WORKOUT_HISTORY || []).map(e => ({ id: uid(), d: e.d, ex: e.ex, v: e.v, s: e.s }));
-  state = { entries: hist, goals: {}, tests: [], health: [], profile: {} };
+  state = { entries: hist, goals: {}, tests: [] };
   saveState();
 }
 function saveState() { localStorage.setItem(LS_KEY, JSON.stringify(state)); }
@@ -107,57 +105,15 @@ function sumByExercise(entries) {
 }
 function weekSums(monday) { return sumByExercise(entriesBetween(iso(monday), iso(addDays(monday, 6)))); }
 
-/* ---------- 건강 지표 (워치에서 가져온 값) ---------- */
-function healthSeries(type) {
-  return state.health.filter(h => h.type === type).sort((a, b) => a.d.localeCompare(b.d));
-}
-function latestHealth(type) {
-  const s = healthSeries(type);
-  return s.length ? s[s.length - 1] : null;
-}
-// 해당 날짜 이전의 가장 가까운 안정시 심박 (그날의 몸 상태에 가장 가까운 값)
-function restingHrAt(dateISO) {
-  const s = healthSeries("resting_hr");
-  let v = null;
-  for (const h of s) { if (h.d > dateISO) break; v = h.v; }
-  return v != null ? v : (s.length ? s[0].v : null);
-}
-function maxHr() {
-  if (state.profile.maxHr > 0) return state.profile.maxHr;
-  if (state.profile.age > 0) return 220 - state.profile.age;   // 표준 추정식
-  return null;
-}
-
 /* ---------- 훈련 부하 ----------
  * 종목이 다른 운동을 한 숫자로 합치기 위한 환산치. 러닝 1km를 맨몸 100회에
  * 상당하는 부하로 본다(대략적인 기준일 뿐 생리학적 등가는 아니다).
- * 이 값 자체보다 주 단위 변화율이 의미 있다.
- *
- * 워치에서 시간·심박을 가져왔고 최대심박을 알면, 러닝은 심박 기반(TRIMP)으로
- * 계산한다. 같은 5km라도 전력질주와 조깅의 부하가 다른 것을 반영한다.
- *
- * 계수 8은 심박이 없던 과거 기록과 눈금을 맞추기 위한 값이다. 보통 강도
- * (6분/km, 심박 150, 안정시 49, 최대 180)에서 km당 104가 나와 옛 방식의 100과
- * 거의 같다. 이래야 4주 평균에 심박 있는 주와 없는 주가 섞여도 비교가 성립한다.
- * 같은 5km라도 조깅 415 / 보통 520 / 빠르게 621 / 전력 687 로 강도가 갈린다.
- */
+ * 이 값 자체보다 주 단위 변화율이 의미 있다. */
 const RUNNING_LOAD_PER_KM = 100;
-const TRIMP_SCALE = 8;
-
-/* Banister TRIMP: 지속시간 × 심박여유율 × 0.64·e^(1.92·심박여유율) */
-function runLoad(e) {
-  const hrMax = maxHr();
-  const hrRest = restingHrAt(e.d);
-  if (e.min > 0 && e.hr > 0 && hrMax && hrRest != null && hrMax > hrRest) {
-    const reserve = Math.min(1, Math.max(0, (e.hr - hrRest) / (hrMax - hrRest)));
-    return e.min * reserve * 0.64 * Math.exp(1.92 * reserve) * TRIMP_SCALE;
-  }
-  return e.v * RUNNING_LOAD_PER_KM;
-}
 
 function loadOf(entries) {
   let load = 0;
-  for (const e of entries) load += e.ex === "running" ? runLoad(e) : e.v;
+  for (const e of entries) load += e.ex === "running" ? e.v * RUNNING_LOAD_PER_KM : e.v;
   return load;
 }
 function weekLoad(monday) { return loadOf(entriesBetween(iso(monday), iso(addDays(monday, 6)))); }
@@ -180,259 +136,10 @@ function acwrZone(ratio) {
   return                   { label: "과부하 위험", cls: "bad",  desc: "급격한 증가는 부상 위험을 높입니다. 회복에 무게를 두세요." };
 }
 
-/* ---------- 워치 기록 가져오기 ----------
- * 스마트워치는 웹앱이 직접 읽을 수 없다(HealthKit 등에 웹 API가 없다).
- * 대신 각 앱이 내보내는 파일을 읽는다.
- *   애플 건강  → 내보내기.zip 또는 그 안의 export.xml
- *   삼성 헬스  → 개인 데이터 다운로드로 받은 CSV
- *   그 외      → 날짜·거리·시간·심박 열이 있는 CSV (가민·스트라바 등)
- *
- * 건강 앱 내보내기는 수백 MB까지 커진다. 통째로 메모리에 올리면 휴대폰에서
- * 죽으므로, 압축을 풀면서 흘려보내며(streaming) 필요한 조각만 골라낸다.
- */
-
-/* ZIP에서 파일 하나를 골라 읽기 스트림으로 돌려준다.
- * 중앙 디렉터리를 직접 읽고, 압축 해제는 브라우저 기본 기능에 맡긴다. */
-async function zipEntryStream(file, matchName) {
-  const tailLen = Math.min(file.size, 66000);          // EOCD는 파일 끝쪽에 있다
-  const tail = new DataView(await file.slice(file.size - tailLen).arrayBuffer());
-  let eocd = -1;
-  for (let i = tail.byteLength - 22; i >= 0; i--) {
-    if (tail.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
-  }
-  if (eocd < 0) throw new Error("ZIP 형식이 아닙니다");
-  const count = tail.getUint16(eocd + 10, true);
-  const cdSize = tail.getUint32(eocd + 12, true);
-  const cdOffset = tail.getUint32(eocd + 16, true);
-  if (cdOffset === 0xffffffff) throw new Error("4GB가 넘는 ZIP은 지원하지 않습니다");
-
-  const cd = new DataView(await file.slice(cdOffset, cdOffset + cdSize).arrayBuffer());
-  const dec = new TextDecoder();
-  let p = 0;
-  for (let i = 0; i < count && p + 46 <= cd.byteLength; i++) {
-    if (cd.getUint32(p, true) !== 0x02014b50) break;
-    const method = cd.getUint16(p + 10, true);
-    const compSize = cd.getUint32(p + 20, true);
-    const nameLen = cd.getUint16(p + 28, true);
-    const extraLen = cd.getUint16(p + 30, true);
-    const cmtLen = cd.getUint16(p + 32, true);
-    const localOff = cd.getUint32(p + 42, true);
-    const name = dec.decode(new Uint8Array(cd.buffer, cd.byteOffset + p + 46, nameLen));
-    p += 46 + nameLen + extraLen + cmtLen;
-    if (!matchName(name)) continue;
-
-    // 로컬 헤더에서 실제 데이터 시작 위치를 구한다 (이름·부가정보 길이가 다를 수 있다)
-    const lh = new DataView(await file.slice(localOff, localOff + 30).arrayBuffer());
-    if (lh.getUint32(0, true) !== 0x04034b50) throw new Error("ZIP 내부 구조가 예상과 다릅니다");
-    const dataStart = localOff + 30 + lh.getUint16(26, true) + lh.getUint16(28, true);
-    let stream = file.slice(dataStart, dataStart + compSize).stream();
-    if (method === 8) {
-      if (!window.DecompressionStream) throw new Error("이 브라우저는 ZIP 해제를 지원하지 않습니다");
-      stream = stream.pipeThrough(new DecompressionStream("deflate-raw"));
-    } else if (method !== 0) {
-      throw new Error("지원하지 않는 압축 방식입니다");
-    }
-    return { name, stream };
-  }
-  return null;
-}
-
-// 애플 건강 XML에서 우리가 쓰는 세 가지만 골라낸다. 나머지(수백만 건의 심박 샘플)는 건너뛴다.
-const HK_MARKS = [
-  "<Workout ",
-  '<Record type="HKQuantityTypeIdentifierRestingHeartRate"',
-  '<Record type="HKQuantityTypeIdentifierVO2Max"',
-];
-
-function attrsOf(tag) {
-  const out = {};
-  const re = /([\w:]+)="([^"]*)"/g;
-  let m;
-  while ((m = re.exec(tag))) out[m[1]] = m[2];
-  return out;
-}
-const hkDate = s => (s || "").slice(0, 10);          // "2026-07-01 07:00:00 +0900" → "2026-07-01"
-
-/* 스트림을 흘려보내며 필요한 요소만 뽑는다. onFound(kind, attrs, inner) */
-async function scanHealthXml(stream, onFound, onProgress) {
-  const reader = stream.pipeThrough(new TextDecoderStream("utf-8")).getReader();
-  let buf = "", read = 0, done = false;
-  while (!done) {
-    const r = await reader.read();
-    done = r.done;
-    if (r.value) { buf += r.value; read += r.value.length; if (onProgress) onProgress(read); }
-
-    for (;;) {
-      // 남은 버퍼에서 가장 먼저 나오는 표식을 찾는다
-      let at = -1, mark = null;
-      for (const mk of HK_MARKS) {
-        const i = buf.indexOf(mk);
-        if (i >= 0 && (at < 0 || i < at)) { at = i; mark = mk; }
-      }
-      if (at < 0) {                       // 표식 없음 — 꼬리만 남기고 버린다
-        buf = buf.slice(Math.max(0, buf.length - 64));
-        break;
-      }
-      const gt = buf.indexOf(">", at);
-      if (gt < 0) { if (!done) break; buf = ""; break; }   // 태그가 잘렸다 — 더 읽는다
-
-      const openTag = buf.slice(at, gt + 1);
-      const isWorkout = mark === "<Workout ";
-      const selfClosing = openTag.endsWith("/>");
-      let inner = "", endAt = gt + 1;
-      if (!selfClosing) {
-        const closeTag = isWorkout ? "</Workout>" : "</Record>";
-        const ce = buf.indexOf(closeTag, gt);
-        if (ce < 0) {                      // 닫는 태그가 아직 안 왔다
-          if (!done) break;
-          buf = buf.slice(gt + 1); continue;
-        }
-        inner = buf.slice(gt + 1, ce);
-        endAt = ce + closeTag.length;
-      }
-      onFound(isWorkout ? "workout" : "record", attrsOf(openTag), inner);
-      buf = buf.slice(endAt);
-    }
-  }
-}
-
-/* 애플 건강 파일(zip 또는 xml)을 읽어 우리 형식으로 바꾼다 */
-async function parseAppleHealth(file, onProgress) {
-  let stream;
-  if (/\.zip$/i.test(file.name)) {
-    const found = await zipEntryStream(file, n => /\.xml$/i.test(n) && !/\bcda\b/i.test(n));
-    if (!found) throw new Error("ZIP 안에서 XML을 찾지 못했습니다");
-    stream = found.stream;
-  } else {
-    stream = file.stream();
-  }
-
-  const runs = [], health = [];
-  await scanHealthXml(stream, (kind, a, inner) => {
-    if (kind === "record") {
-      const d = hkDate(a.startDate), v = parseFloat(a.value);
-      if (!d || !(v > 0)) return;
-      health.push({ d, type: a.type.includes("VO2Max") ? "vo2max" : "resting_hr", v: Math.round(v * 10) / 10 });
-      return;
-    }
-    if (!/Running/i.test(a.workoutActivityType || "")) return;
-    const d = hkDate(a.startDate);
-    if (!d) return;
-
-    // 거리·칼로리는 예전 형식은 속성에, 최근 형식은 WorkoutStatistics 자식에 들어 있다
-    let km = null, kcal = null, hr = null;
-    if (a.totalDistance) {
-      km = parseFloat(a.totalDistance);
-      if (/mi/i.test(a.totalDistanceUnit || "")) km *= 1.609344;
-    }
-    if (a.totalEnergyBurned) kcal = parseFloat(a.totalEnergyBurned);
-    const statRe = /<WorkoutStatistics\b([^>]*)>/g;
-    let sm;
-    while ((sm = statRe.exec(inner))) {
-      const s = attrsOf(sm[1]);
-      const t = s.type || "";
-      if (/DistanceWalkingRunning/.test(t) && s.sum != null) {
-        km = parseFloat(s.sum) * (/mi/i.test(s.unit || "") ? 1.609344 : 1);
-      } else if (/ActiveEnergyBurned/.test(t) && s.sum != null) {
-        kcal = parseFloat(s.sum);
-      } else if (/HeartRate/.test(t) && s.average != null) {
-        hr = parseFloat(s.average);
-      }
-    }
-    const min = a.duration
-      ? parseFloat(a.duration) * (/hr|hour/i.test(a.durationUnit || "") ? 60 : 1)
-      : null;
-    if (!(km > 0)) return;
-    runs.push({
-      d, km: Math.round(km * 100) / 100,
-      min: min > 0 ? Math.round(min * 10) / 10 : null,
-      hr: hr > 0 ? Math.round(hr) : null,
-      kcal: kcal > 0 ? Math.round(kcal) : null,
-    });
-  }, onProgress);
-  return { runs, health };
-}
-
-/* CSV — 삼성 헬스 내보내기와 일반 CSV(가민·스트라바 등)를 함께 처리한다.
- * 열 이름을 보고 날짜·거리·시간·심박을 스스로 찾는다. */
-function splitCsvLine(line) {
-  const out = [];
-  let cur = "", q = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (q) {
-      if (c === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else q = false; }
-      else cur += c;
-    } else if (c === '"') q = true;
-    else if (c === ",") { out.push(cur); cur = ""; }
-    else cur += c;
-  }
-  out.push(cur);
-  return out;
-}
-
-function parseWatchCsv(text) {
-  const lines = text.split(/\r?\n/).filter(l => l.trim());
-  // 삼성 헬스는 첫 줄이 버전 정보라 헤더가 두 번째 줄에 온다. 열이 가장 많은 앞 줄을 헤더로 본다.
-  let hi = 0, best = -1;
-  for (let i = 0; i < Math.min(3, lines.length); i++) {
-    const n = splitCsvLine(lines[i]).length;
-    if (n > best) { best = n; hi = i; }
-  }
-  const head = splitCsvLine(lines[hi]).map(h => h.trim().toLowerCase());
-  const find = (...pats) => head.findIndex(h => pats.some(p => h.includes(p)));
-
-  const iDate = find("start_time", "start time", "날짜", "date", "시작");
-  const iDist = find("distance", "거리");
-  const iDur  = find("duration", "시간", "elapsed", "moving");
-  const iHr   = find("mean_heart_rate", "avg_hr", "average heart", "heart_rate", "평균 심박", "심박");
-  const iType = find("exercise_type", "activity type", "type", "종류", "운동");
-  if (iDate < 0 || iDist < 0) return { runs: [], health: [], reason: "날짜·거리 열을 찾지 못했습니다" };
-
-  const runs = [];
-  for (let i = hi + 1; i < lines.length; i++) {
-    const c = splitCsvLine(lines[i]);
-    if (c.length < head.length - 2) continue;
-    const rawDate = (c[iDate] || "").trim();
-    const m = rawDate.match(/(\d{4})[-./](\d{1,2})[-./](\d{1,2})/);
-    if (!m) continue;
-    const d = `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
-
-    // 달리기만. 종류 열이 없으면 전부 받는다(사용자가 러닝 파일을 넣었다고 본다).
-    if (iType >= 0) {
-      const t = (c[iType] || "").trim().toLowerCase();
-      const isRun = t === "1002" || /run|러닝|달리기|조깅/.test(t);
-      if (t && !isRun) continue;
-    }
-
-    let dist = parseFloat((c[iDist] || "").replace(/[^\d.]/g, ""));
-    if (!(dist > 0)) continue;
-    if (dist > 400) dist /= 1000;                    // 미터로 적힌 경우(삼성 헬스)
-    let min = null;
-    if (iDur >= 0) {
-      const raw = (c[iDur] || "").trim();
-      const hms = raw.match(/^(\d+):(\d{2})(?::(\d{2}))?$/);
-      if (hms) {
-        min = hms[3] ? +hms[1] * 60 + +hms[2] + +hms[3] / 60 : +hms[1] + +hms[2] / 60;
-      } else {
-        const n = parseFloat(raw.replace(/[^\d.]/g, ""));
-        if (n > 0) min = n > 10000 ? n / 60000 : n;   // 밀리초로 적힌 경우(삼성 헬스)
-      }
-    }
-    const hr = iHr >= 0 ? parseFloat((c[iHr] || "").replace(/[^\d.]/g, "")) : NaN;
-    runs.push({
-      d, km: Math.round(dist * 100) / 100,
-      min: min > 0 ? Math.round(min * 10) / 10 : null,
-      hr: hr > 0 ? Math.round(hr) : null, kcal: null,
-    });
-  }
-  return { runs, health: [] };
-}
-
 /* ---------- 뷰 라우팅 ---------- */
 const app = document.getElementById("app");
 const views = { log: renderLog, week: renderWeek, month: renderMonth,
-                test: renderTest, health: renderHealth, trend: renderTrend, data: renderData };
+                test: renderTest, trend: renderTrend, data: renderData };
 let current = { view: "log", date: iso(new Date()), weekMonday: mondayOf(new Date()),
                 month: new Date().getMonth(), year: new Date().getFullYear(),
                 trendEx: "pushup_total", trendYear: new Date().getFullYear(),
@@ -549,15 +256,8 @@ function renderLog() {
     .sort((a, b) => a.ex.localeCompare(b.ex));
   const list = el("ul", { class: "loglist" },
     dayEntries.length ? dayEntries.map(e => el("li", null,
-      el("span", { class: "ex" }, exName(e.ex),
-        e.src === "watch" ? el("span", { class: "tag" }, "워치") : null),
-      // 워치에서 온 러닝은 시간·심박을 함께 보여준다
-      e.min || e.hr
-        ? el("span", { class: "sets" },
-            [e.min ? `${fmtNum(e.min, true)}분` : null,
-             e.hr ? `${e.hr}bpm` : null,
-             e.min && e.v ? `${fmtNum(e.min / e.v, true)}분/km` : null].filter(Boolean).join(" · "))
-        : e.s ? el("span", { class: "sets" }, e.s) : null,
+      el("span", { class: "ex" }, exName(e.ex)),
+      e.s ? el("span", { class: "sets" }, e.s) : null,
       el("span", { class: "val" }, `${fmtNum(e.v, EX_BY_KEY[e.ex] && EX_BY_KEY[e.ex].decimal)} ${exUnit(e.ex)}`),
       el("button", { title: "삭제", onclick: () => {
         state.entries = state.entries.filter(x => x.id !== e.id);
@@ -668,11 +368,7 @@ function renderWeek() {
       el("span", null, "0"), el("span", null, "0.8"), el("span", null, "1.3"), el("span", null, "2.0+")),
     el("p", { class: "muted", style: "margin-bottom:0" }, zone.desc),
     el("p", { class: "muted", style: "margin:6px 0 0" },
-      maxHr() && latestHealth("resting_hr")
-        ? "부하 = 총 반복수 + 러닝(심박 기반). 워치에서 시간·심박을 가져온 러닝은 " +
-          "강도까지 반영해 계산합니다. 절대값보다 주별 변화율을 보는 지표입니다."
-        : `부하 = 총 반복수 + 러닝 km × ${RUNNING_LOAD_PER_KM}. 절대값보다 주별 변화율을 보는 지표입니다. ` +
-          "건강 탭에서 워치 기록과 나이를 넣으면 러닝을 심박 기반으로 더 정확히 계산합니다."));
+      `부하 = 총 반복수 + 러닝 km × ${RUNNING_LOAD_PER_KM}. 절대값보다 주별 변화율을 보는 지표입니다.`));
 
   // 요일 × 종목 상세 표
   const days = Array.from({ length: 7 }, (_, i) => addDays(mon, i));
@@ -1139,149 +835,6 @@ function renderTest() {
         "월 1회 정도, 컨디션이 비슷한 시간대에 측정하면 총량 그래프와 나란히 놓고 볼 수 있습니다.")));
 }
 
-/* ---------- 건강 탭 ----------
- * 워치가 재는 값으로 '얼마나 했나'가 아니라 '몸이 어떤 상태인가'를 본다.
- *   VO2Max     심폐능력. 오르면 좋다. 워치가 러닝 중에 추정한다.
- *   안정시 심박  회복 상태. 낮을수록 좋고, 갑자기 오르면 피로·과훈련 신호다.
- *   러닝 효율   같은 심박으로 더 빨리 달릴 수 있게 되었는가.
- */
-function lineChart(points, opts) {
-  const o = Object.assign({ W: 820, H: 240, padL: 62, padB: 40, padT: 16, lower: false, unit: "" }, opts);
-  if (points.length < 2) return null;
-  const vals = points.map(p => p.v);
-  let lo = Math.min(...vals), hi = Math.max(...vals);
-  const pad = (hi - lo) * 0.15 || Math.max(1, hi * 0.05);
-  lo -= pad; hi += pad;
-  const t0 = parseISO(points[0].d).getTime();
-  const t1 = parseISO(points[points.length - 1].d).getTime();
-  const span = Math.max(1, t1 - t0);
-  const X = p => o.padL + (o.W - o.padL - 14) * ((parseISO(p.d).getTime() - t0) / span);
-  const Y = p => o.H - o.padB - (o.H - o.padB - o.padT) * ((p.v - lo) / (hi - lo));
-  const parts = [`<line class="axis" x1="${o.padL}" y1="${o.H - o.padB}" x2="${o.W}" y2="${o.H - o.padB}"/>`];
-  for (const f of [0, 0.5, 1]) {
-    const y = o.H - o.padB - (o.H - o.padB - o.padT) * f;
-    parts.push(`<line class="axis" x1="${o.padL}" y1="${y}" x2="${o.W}" y2="${y}" stroke-dasharray="3 4"/>`);
-    parts.push(`<text x="${o.padL - 7}" y="${y + 5}" text-anchor="end">${fmtNum(lo + (hi - lo) * f, true)}</text>`);
-  }
-  parts.push(`<polyline class="trendline" points="${points.map(p => `${X(p).toFixed(1)},${Y(p).toFixed(1)}`).join(" ")}"/>`);
-  for (const p of points)
-    parts.push(`<circle class="dot" cx="${X(p).toFixed(1)}" cy="${Y(p).toFixed(1)}" r="4"><title>${p.d} · ${fmtNum(p.v, true)} ${o.unit}</title></circle>`);
-  parts.push(`<text x="${o.padL}" y="${o.H - o.padB + 20}">${points[0].d}</text>`);
-  parts.push(`<text x="${o.W - 14}" y="${o.H - o.padB + 20}" text-anchor="end">${points[points.length - 1].d}</text>`);
-  const box = el("div");
-  box.innerHTML = `<svg class="chart" viewBox="0 0 ${o.W} ${o.H}" role="img">${parts.join("")}</svg>`;
-  return box;
-}
-
-// 최근값과 그 이전 평균을 비교해 방향을 보여준다
-function trendStat(name, series, unit, lowerIsBetter, note) {
-  if (!series.length)
-    return el("div", { class: "stat" },
-      el("div", { class: "name" }, name),
-      el("div", { class: "big" }, "—"),
-      el("div", { class: "cmp muted" }, "기록 없음"));
-  const last = series[series.length - 1];
-  const prior = series.slice(Math.max(0, series.length - 7), series.length - 1);
-  const base = prior.length ? prior.reduce((a, h) => a + h.v, 0) / prior.length : null;
-  const diff = base == null ? null : last.v - base;
-  const good = diff == null ? null : (lowerIsBetter ? diff < 0 : diff > 0);
-  return el("div", { class: "stat" },
-    el("div", { class: "name" }, name),
-    el("div", { class: "big" }, fmtNum(last.v, true), el("span", { class: "unit" }, " " + unit)),
-    diff == null
-      ? el("div", { class: "cmp muted" }, `${last.d} 측정`)
-      : el("div", { class: "cmp" },
-          el("span", { class: good ? "up" : "down" },
-            (diff >= 0 ? "▲ " : "▼ ") + fmtNum(Math.abs(diff), true)),
-          ` 직전 평균 ${fmtNum(base, true)} · ${last.d}`),
-    note ? el("div", { class: "muted", style: "font-size:12px;margin-top:4px" }, note) : null);
-}
-
-function renderHealth() {
-  const vo2 = healthSeries("vo2max");
-  const rhr = healthSeries("resting_hr");
-
-  // 심박이 기록된 러닝 → 심박당 속도(효율). 같은 심박에서 빨라지면 심폐가 좋아진 것.
-  const runs = state.entries
-    .filter(e => e.ex === "running" && e.min > 0 && e.hr > 0 && e.v > 0)
-    .sort((a, b) => a.d.localeCompare(b.d));
-  const effSeries = runs.map(e => ({ d: e.d, v: Math.round((e.v / (e.min / 60)) / e.hr * 10000) / 100 }));
-  const paceSeries = runs.map(e => ({ d: e.d, v: Math.round(e.min / e.v * 100) / 100 }));
-
-  // 나이·최대심박 설정 — 심박 기반 부하 계산에 필요
-  const ageInput = el("input", { type: "number", min: "10", max: "100", step: "1", style: "width:76px",
-    value: state.profile.age || "", placeholder: "나이",
-    onchange: ev => {
-      const v = parseInt(ev.target.value, 10);
-      if (v > 0) state.profile.age = v; else delete state.profile.age;
-      saveState(); render();
-    } });
-  const maxHrInput = el("input", { type: "number", min: "120", max: "230", step: "1", style: "width:86px",
-    value: state.profile.maxHr || "", placeholder: maxHr() ? String(maxHr()) : "최대심박",
-    onchange: ev => {
-      const v = parseInt(ev.target.value, 10);
-      if (v > 0) state.profile.maxHr = v; else delete state.profile.maxHr;
-      saveState(); render();
-    } });
-
-  const hasAny = vo2.length || rhr.length || runs.length;
-
-  app.append(
-    el("div", { class: "card" },
-      el("h2", null, "심폐 건강"),
-      el("div", { class: "stat-grid" },
-        trendStat("심폐능력 (VO₂max)", vo2, "mL/kg/min", false,
-          "워치가 러닝 중에 추정합니다. 높을수록 좋습니다."),
-        trendStat("안정시 심박", rhr, "bpm", true,
-          "낮을수록 회복이 잘 된 상태. 갑자기 오르면 피로 신호입니다."),
-        trendStat("러닝 효율", effSeries, "×100 km/h/bpm", false,
-          "심박 1회당 속도. 같은 심박으로 더 빨리 달릴수록 높아집니다.")),
-      vo2.length >= 2
-        ? el("div", null, el("h2", { style: "margin-top:16px" }, "심폐능력 추이"), lineChart(vo2, { unit: "mL/kg/min" }))
-        : null,
-      rhr.length >= 2
-        ? el("div", null, el("h2", { style: "margin-top:16px" }, "안정시 심박 추이"), lineChart(rhr, { unit: "bpm" }))
-        : null,
-      effSeries.length >= 2
-        ? el("div", null,
-            el("h2", { style: "margin-top:16px" }, "러닝 효율 추이"), lineChart(effSeries, { unit: "" }),
-            el("p", { class: "muted" }, "선이 우상향하면 심폐능력이 좋아지는 중입니다."))
-        : null,
-      paceSeries.length >= 2
-        ? el("div", null,
-            el("h2", { style: "margin-top:16px" }, "러닝 페이스 추이"), lineChart(paceSeries, { unit: "분/km" }),
-            el("p", { class: "muted" }, "낮을수록 빠릅니다. 단, 그날 강도에 따라 흔들리므로 효율 그래프와 함께 보세요."))
-        : null,
-      !hasAny
-        ? el("p", { class: "muted" },
-            "아직 워치 기록이 없습니다. 데이터 탭의 [워치 기록 가져오기]로 불러오세요.")
-        : null),
-
-    el("div", { class: "card" },
-      el("h2", null, "심박 기반 부하 설정"),
-      el("p", { class: "muted" },
-        "나이를 넣으면 최대심박을 추정(220 − 나이)해, 시간·심박이 있는 러닝의 부하를 " +
-        "강도까지 반영해 계산합니다. 같은 5km라도 전력질주와 조깅의 부하가 달라집니다. " +
-        "실측 최대심박을 아신다면 직접 넣는 편이 정확합니다."),
-      el("div", { class: "row" },
-        el("span", { class: "muted" }, "나이"), ageInput,
-        el("span", { class: "muted" }, "최대심박"), maxHrInput),
-      el("p", { class: "muted", style: "margin-bottom:0" },
-        maxHr()
-          ? `적용 중: 최대심박 ${maxHr()} bpm · 안정시 심박 ` +
-            (latestHealth("resting_hr") ? `${latestHealth("resting_hr").v} bpm` : "없음(워치 기록 필요)")
-          : "나이나 최대심박을 넣기 전에는 러닝을 거리 기준으로만 계산합니다.")),
-
-    el("div", { class: "card" },
-      el("h2", null, "지표 읽는 법"),
-      el("ul", { class: "notes" },
-        el("li", null, "VO₂max는 몇 주 단위로 천천히 움직입니다. 하루하루의 변동은 무시하세요."),
-        el("li", null, "안정시 심박이 평소보다 5 bpm 이상 높은 날이 이어지면 회복이 덜 된 것입니다."),
-        el("li", null, "러닝 효율은 페이스보다 정직합니다. 페이스는 그날 얼마나 힘을 썼는지에 좌우되지만, " +
-                       "효율은 '같은 심박에서 얼마나 빠른가'라서 컨디션 영향이 덜합니다."),
-        el("li", null, "세 지표가 함께 좋아지면 훈련이 통하고 있다는 뜻입니다."))));
-}
-
 /* ---------- 추이 탭 ----------
  * 축을 두 방향으로 바꿔 볼 수 있다.
  *   집계 단위: 주별 / 월별 / 연별
@@ -1474,7 +1027,7 @@ function heatmapCard() {
   const loadByDay = {};
   for (const e of state.entries) {
     if (!e.d.startsWith(String(year))) continue;
-    loadByDay[e.d] = (loadByDay[e.d] || 0) + (e.ex === "running" ? runLoad(e) : e.v);
+    loadByDay[e.d] = (loadByDay[e.d] || 0) + (e.ex === "running" ? e.v * RUNNING_LOAD_PER_KM : e.v);
   }
   const dayLoads = Object.values(loadByDay).sort((a, b) => a - b);
   // 분위수로 경계를 잡아, 해가 달라도 상대적인 진하기가 유지되게 한다
@@ -1537,114 +1090,6 @@ function download(filename, text, type) {
   URL.revokeObjectURL(a.href);
 }
 
-/* 워치 기록 가져오기 카드 — 파일 종류를 스스로 알아보고, 미리 보여준 뒤 병합한다 */
-function watchImportCard() {
-  const status = el("p", { class: "muted" },
-    "애플 건강의 내보내기 ZIP, 또는 워치 앱에서 받은 CSV 파일을 넣으세요.");
-  const result = el("div", { class: "diag" });
-
-  const merge = (runs, health) => {
-    // 러닝: 날짜+거리가 같으면 같은 기록으로 본다(직접 적은 것과 워치 것이 겹치는 경우)
-    let added = 0, enriched = 0;
-    for (const r of runs) {
-      const same = state.entries.find(e => e.ex === "running" && e.d === r.d &&
-                                           Math.abs(e.v - r.km) < 0.06);
-      if (same) {
-        // 이미 있는 기록에 시간·심박만 채워 넣는다
-        if (r.min && !same.min) { same.min = r.min; enriched++; }
-        if (r.hr && !same.hr) same.hr = r.hr;
-        if (r.kcal && !same.kcal) same.kcal = r.kcal;
-        continue;
-      }
-      state.entries.push({ id: uid(), d: r.d, ex: "running", v: r.km,
-                           min: r.min || undefined, hr: r.hr || undefined,
-                           kcal: r.kcal || undefined, src: "watch" });
-      added++;
-    }
-    const seenH = new Set(state.health.map(h => `${h.d}|${h.type}`));
-    let addedH = 0;
-    for (const h of health) {
-      const k = `${h.d}|${h.type}`;
-      if (seenH.has(k)) continue;          // 하루 한 건만 (워치는 하루에도 여러 번 잰다)
-      seenH.add(k); state.health.push(h); addedH++;
-    }
-    saveState();
-    return { added, enriched, addedH };
-  };
-
-  const fileInput = el("input", { type: "file", class: "visually-hidden",
-    accept: ".zip,.xml,.csv,application/zip,text/xml,text/csv",
-    onchange: async ev => {
-      const file = ev.target.files[0];
-      if (!file) return;
-      result.innerHTML = "";
-      status.textContent = `${file.name} 읽는 중…`;
-      try {
-        let parsed;
-        if (/\.csv$/i.test(file.name)) {
-          parsed = parseWatchCsv(await file.text());
-          if (parsed.reason) throw new Error(parsed.reason);
-        } else if (/\.(zip|xml)$/i.test(file.name)) {
-          parsed = await parseAppleHealth(file, read => {
-            status.textContent = `읽는 중… ${(read / 1e6).toFixed(0)}MB 처리`;
-          });
-        } else {
-          throw new Error("zip · xml · csv 파일만 지원합니다");
-        }
-
-        const { runs, health } = parsed;
-        if (!runs.length && !health.length) {
-          status.textContent = "가져올 러닝 기록을 찾지 못했습니다.";
-          return;
-        }
-        const vo2 = health.filter(h => h.type === "vo2max").length;
-        const rhr = health.filter(h => h.type === "resting_hr").length;
-        const withHr = runs.filter(r => r.hr).length;
-        const span = runs.length
-          ? `${runs[0].d} ~ ${runs[runs.length - 1].d}` : "-";
-        if (!confirm(`러닝 ${runs.length}건${runs.length ? ` (${span})` : ""}\n` +
-                     `심박 포함 ${withHr}건 · 심폐능력 ${vo2}건 · 안정시 심박 ${rhr}건\n\n가져올까요?`)) {
-          status.textContent = "취소했습니다.";
-          return;
-        }
-        const r = merge(runs, health);
-        render();
-        alert(`러닝 ${r.added}건을 새로 넣고, 기존 ${r.enriched}건에 시간·심박을 채웠습니다.\n` +
-              `건강 지표 ${r.addedH}건을 가져왔습니다.`);
-      } catch (e) {
-        status.textContent = "가져오지 못했습니다: " + e.message;
-      }
-    } });
-
-  const runsWithHr = state.entries.filter(e => e.ex === "running" && e.hr > 0).length;
-  if (runsWithHr || state.health.length) {
-    result.append(
-      el("div", null, `심박이 있는 러닝 ${runsWithHr}건`),
-      el("div", null, `심폐능력 ${healthSeries("vo2max").length}건 · ` +
-                      `안정시 심박 ${healthSeries("resting_hr").length}건`));
-  }
-
-  return el("div", { class: "card" },
-    el("h2", null, "워치 기록 가져오기"),
-    el("div", { class: "row" },
-      el("button", { class: "btn primary", onclick: () => fileInput.click() }, "파일 선택"),
-      fileInput),
-    status, result,
-    el("h2", { style: "margin-top:14px" }, "파일 만드는 법"),
-    el("ul", { class: "notes" },
-      el("li", null, el("b", null, "애플워치 "), "— 아이폰 건강 앱 → 오른쪽 위 프로필 → 맨 아래 " +
-        "[건강 데이터 내보내기] → 파일에 저장. 받은 ZIP을 그대로 넣으면 됩니다. " +
-        "러닝뿐 아니라 심폐능력·안정시 심박도 함께 들어옵니다."),
-      el("li", null, el("b", null, "갤럭시워치 "), "— 삼성 헬스 앱 → 설정 → [개인 데이터 다운로드] → " +
-        "받은 파일 중 exercise가 들어간 CSV를 넣으세요."),
-      el("li", null, el("b", null, "가민·스트라바 등 "), "— 활동 목록을 CSV로 내보내면 됩니다. " +
-        "날짜와 거리 열만 있으면 읽고, 시간·심박 열이 있으면 함께 가져옵니다."),
-      el("li", null, "같은 날 같은 거리의 러닝이 이미 있으면 새로 만들지 않고 " +
-        "시간·심박만 채워 넣습니다. 여러 번 넣어도 중복되지 않습니다.")),
-    el("p", { class: "muted", style: "margin-bottom:0" },
-      "파일은 이 기기 안에서만 읽습니다. 어디로도 전송되지 않습니다."));
-}
-
 function renderData() {
   const n = state.entries.length;
   const dates = state.entries.map(e => e.d).sort();
@@ -1668,20 +1113,9 @@ function renderData() {
           const key = `${e.d}|${e.ex}|${e.v}|${e.s || ""}`;
           if (seen.has(key)) continue;
           seen.add(key);
-          state.entries.push({ id: uid(), d: e.d, ex: e.ex, v: e.v, s: e.s,
-                               min: e.min, hr: e.hr, kcal: e.kcal, src: e.src });
+          state.entries.push({ id: uid(), d: e.d, ex: e.ex, v: e.v, s: e.s });
           added++;
         }
-        // 건강 지표와 프로필도 함께 복원
-        if (Array.isArray(data.health)) {
-          const seenH = new Set(state.health.map(h => `${h.d}|${h.type}`));
-          for (const h of data.health) {
-            const k = `${h.d}|${h.type}`;
-            if (!h.d || !h.type || seenH.has(k)) continue;
-            seenH.add(k); state.health.push({ d: h.d, type: h.type, v: h.v });
-          }
-        }
-        if (data.profile) Object.assign(state.profile, data.profile);
         // 테스트 기록도 같은 방식으로 병합
         let addedTests = 0;
         if (Array.isArray(data.tests)) {
@@ -1716,14 +1150,12 @@ function renderData() {
         el("button", { class: "btn primary", onclick: () =>
           download(`운동일지-${iso(new Date())}.json`,
             JSON.stringify({ exported: iso(new Date()), goals: state.goals,
-                             entries: state.entries, tests: state.tests,
-                             health: state.health, profile: state.profile }, null, 1),
+                             entries: state.entries, tests: state.tests }, null, 1),
             "application/json") }, "JSON 내보내기"),
         el("button", { class: "btn", onclick: () => {
-          const head = "date,exercise,exercise_name,value,unit,sets,minutes,avg_hr,kcal,source\n";
+          const head = "date,exercise,exercise_name,value,unit,sets\n";
           const body = [...state.entries].sort((a, b) => a.d.localeCompare(b.d) || a.ex.localeCompare(b.ex))
-            .map(e => `${e.d},${e.ex},${exName(e.ex)},${e.v},${exUnit(e.ex)},"${e.s || ""}",` +
-                      `${e.min || ""},${e.hr || ""},${e.kcal || ""},${e.src || "manual"}`).join("\n");
+            .map(e => `${e.d},${e.ex},${exName(e.ex)},${e.v},${exUnit(e.ex)},"${e.s || ""}"`).join("\n");
           download(`운동일지-${iso(new Date())}.csv`, "﻿" + head + body, "text/csv");
         } }, "CSV 내보내기"),
         el("button", { class: "btn", onclick: () => importInput.click() }, "JSON 가져오기"),
@@ -1731,15 +1163,13 @@ function renderData() {
       el("p", { class: "muted" },
         "가져오기는 (날짜·종목·수량·세트) 기준으로 중복을 제외하고 병합합니다. " +
         "Numbers 파일은 tools/convert_numbers.py 로 JSON 변환 후 가져오면 됩니다.")),
-    watchImportCard(),
     el("div", { class: "card" },
       el("h2", null, "초기화"),
       el("p", { class: "muted" }, "되돌릴 수 없습니다. 먼저 JSON을 내보내 두세요."),
       el("div", { class: "row" },
         el("button", { class: "btn danger", onclick: () => {
-          if (confirm(`이 브라우저에 저장된 운동기록 ${n.toLocaleString()}건, ` +
-                      `테스트 ${state.tests.length}건, 건강 지표 ${state.health.length}건을 ` +
-                      `모두 지웁니다. 계속할까요?`)) {
+          if (confirm(`이 브라우저에 저장된 운동기록 ${n.toLocaleString()}건과 ` +
+                      `테스트 ${state.tests.length}건을 모두 지웁니다. 계속할까요?`)) {
             seedState(); render();
           }
         } }, "모든 기록 지우기"))),
