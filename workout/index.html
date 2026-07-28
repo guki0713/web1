@@ -307,26 +307,6 @@ table.grid td.derived { color: var(--accent); }
 }
 .diag:empty { display: none; }
 
-/* 가져온 직후 알림 */
-.card.notice { border-color: var(--accent); background: var(--panel); }
-.card.notice b { color: var(--accent); }
-
-.quickbox {
-  width: 100%;
-  margin-top: 8px;
-  font: inherit;
-  font-size: 14px;
-  color: var(--text);
-  background: var(--panel2);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px 10px;
-  resize: vertical;
-}
-.quickbox:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-
-a.btn { text-decoration: none; display: inline-block; }
-
 .notes { margin: 0; padding-left: 18px; color: var(--dim); font-size: 13px; }
 .notes li { margin-bottom: 5px; }
 .notes li:last-child { margin-bottom: 0; }
@@ -847,131 +827,6 @@ function parseWatchCsv(text) {
   return { runs, health: [] };
 }
 
-/* ---------- 빠른 연동 ----------
- * 워치 기록을 파일 없이 한 줄 텍스트로 받아들인다. 들어오는 길은 세 가지지만
- * 해석하는 규칙은 하나다.
- *   1) 주소 뒤에 붙여서   .../workout/#run=2026-07-28,5.2,31.4,152
- *   2) 복사해 둔 내용을 앱에서 붙여넣기
- *   3) 상자에 직접 입력
- *
- * 홈 화면 앱과 사파리는 iOS에서 저장 공간이 분리되어 있다. 그래서 주소로 넣는
- * 방식만으로는 홈 화면 앱에 반영되지 않아, 붙여넣기 경로를 함께 둔다.
- *
- * 한 줄 형식: 날짜,거리km,시간분,평균심박   (날짜·시간·심박은 생략 가능)
- *   2026-07-28,5.2,31.4,152
- *   5.2,31.4,152            ← 날짜를 빼면 오늘
- *   5.2                     ← 거리만
- * 건강 지표: vo2max 44.1 / rhr 49  형태도 같은 상자에서 받는다.
- */
-const HEALTH_ALIAS = {
-  vo2max: "vo2max", vo2: "vo2max", 심폐: "vo2max",
-  rhr: "resting_hr", resting_hr: "resting_hr", 안정심박: "resting_hr", 안정시심박: "resting_hr",
-};
-
-function parseQuickText(text) {
-  const runs = [], health = [];
-  const today = iso(new Date());
-  for (let line of String(text).split(/[\n;]+/)) {
-    line = line.trim();
-    if (!line) continue;
-    const parts = line.split(/[,\s]+/).filter(Boolean);
-    if (!parts.length) continue;
-
-    // 건강 지표: 이름이 섞여 있으면 그쪽으로
-    const nameIdx = parts.findIndex(p => HEALTH_ALIAS[p.toLowerCase()]);
-    if (nameIdx >= 0) {
-      const type = HEALTH_ALIAS[parts[nameIdx].toLowerCase()];
-      const dateTok = parts.find(p => /^\d{4}-\d{2}-\d{2}$/.test(p));
-      const v = parseFloat(parts.filter((p, i) => i !== nameIdx && p !== dateTok)[0]);
-      if (v > 0) health.push({ d: dateTok || today, type, v: Math.round(v * 10) / 10 });
-      continue;
-    }
-
-    let d = today, nums = parts;
-    if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(parts[0])) {
-      const [y, m, dd] = parts[0].split("-");
-      d = `${y}-${m.padStart(2, "0")}-${dd.padStart(2, "0")}`;
-      nums = parts.slice(1);
-    }
-    const [km, min, hr] = nums.map(n => parseFloat(n));
-    if (!(km > 0)) continue;
-    runs.push({
-      d, km: Math.round(km * 100) / 100,
-      min: min > 0 ? Math.round(min * 10) / 10 : null,
-      hr: hr > 0 ? Math.round(hr) : null, kcal: null,
-    });
-  }
-  return { runs, health };
-}
-
-/* 러닝·건강 지표를 기존 기록에 합친다. 되돌릴 수 있게 새로 만든 id를 돌려준다. */
-function mergeWatchData(runs, health) {
-  let added = 0, enriched = 0, addedH = 0;
-  const newIds = [];
-  for (const r of runs) {
-    const same = state.entries.find(e => e.ex === "running" && e.d === r.d &&
-                                         Math.abs(e.v - r.km) < 0.06);
-    if (same) {                        // 같은 날 같은 거리면 시간·심박만 채운다
-      if (r.min && !same.min) { same.min = r.min; enriched++; }
-      if (r.hr && !same.hr) same.hr = r.hr;
-      if (r.kcal && !same.kcal) same.kcal = r.kcal;
-      continue;
-    }
-    const id = uid();
-    state.entries.push({ id, d: r.d, ex: "running", v: r.km,
-                         min: r.min || undefined, hr: r.hr || undefined,
-                         kcal: r.kcal || undefined, src: "watch" });
-    newIds.push(id); added++;
-  }
-  const seenH = new Set(state.health.map(h => `${h.d}|${h.type}`));
-  for (const h of health) {
-    const k = `${h.d}|${h.type}`;
-    if (seenH.has(k)) continue;        // 하루 한 건만
-    seenH.add(k); state.health.push(h); addedH++;
-  }
-  saveState();
-  return { added, enriched, addedH, newIds };
-}
-
-// 가져온 직후 화면 맨 위에 뜨는 알림 (되돌리기 포함)
-let importNotice = null;
-
-function noticeCard() {
-  if (!importNotice) return null;
-  const n = importNotice;
-  return el("div", { class: "card notice" },
-    el("div", { class: "row spread" },
-      el("b", null, "워치 기록을 가져왔습니다"),
-      el("button", { class: "btn tiny", onclick: () => { importNotice = null; render(); } }, "닫기")),
-    el("p", { class: "muted", style: "margin:6px 0 0" },
-      `러닝 ${n.added}건 추가` +
-      (n.enriched ? ` · 기존 ${n.enriched}건에 시간·심박 채움` : "") +
-      (n.addedH ? ` · 건강 지표 ${n.addedH}건` : "") +
-      (!n.added && !n.enriched && !n.addedH ? " (이미 있는 기록이라 변경 없음)" : "")),
-    n.newIds && n.newIds.length
-      ? el("div", { class: "row", style: "margin-top:8px" },
-          el("button", { class: "btn danger tiny", onclick: () => {
-            const ids = new Set(n.newIds);
-            state.entries = state.entries.filter(e => !ids.has(e.id));
-            saveState(); importNotice = null; render();
-          } }, "되돌리기"))
-      : null);
-}
-
-/* 주소에 붙어 온 기록을 처리한다. 처리 후 주소를 정리해 새로고침 시 두 번 들어가지 않게 한다. */
-function importFromUrl() {
-  const raw = (location.hash || "").replace(/^#/, "") || (location.search || "").replace(/^\?/, "");
-  if (!raw || !/(^|&)(run|health)=/.test(raw)) return;
-  let q;
-  try { q = new URLSearchParams(raw); } catch (e) { return; }
-  const text = [q.get("run") || "", q.get("health") || ""].filter(Boolean).join("\n");
-  if (!text) return;
-  const { runs, health } = parseQuickText(decodeURIComponent(text));
-  if (!runs.length && !health.length) return;
-  importNotice = mergeWatchData(runs, health);
-  try { history.replaceState(null, "", location.pathname); } catch (e) { /* file:// 등 */ }
-}
-
 /* ---------- 뷰 라우팅 ---------- */
 const app = document.getElementById("app");
 const views = { log: renderLog, week: renderWeek, month: renderMonth,
@@ -990,12 +845,7 @@ document.getElementById("tabs").addEventListener("click", ev => {
   document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", b === btn));
   render();
 });
-function render() {
-  app.innerHTML = "";
-  const notice = noticeCard();
-  if (notice) app.appendChild(notice);
-  views[current.view]();
-}
+function render() { app.innerHTML = ""; views[current.view](); }
 
 function el(tag, attrs, ...children) {
   const node = document.createElement(tag);
@@ -2085,81 +1935,40 @@ function download(filename, text, type) {
   URL.revokeObjectURL(a.href);
 }
 
-/* 빠른 연동 카드 — 파일 없이 한 줄로 넣는 세 가지 길 */
-function quickSyncCard() {
-  const box = el("textarea", { rows: "3", class: "quickbox",
-    placeholder: "2026-07-28,5.2,31.4,152\nvo2max 44.1" });
-  const msg = el("p", { class: "muted", style: "margin:6px 0 0" });
-
-  const take = (text, from) => {
-    const { runs, health } = parseQuickText(text);
-    if (!runs.length && !health.length) {
-      msg.textContent = `${from}에서 읽을 내용을 찾지 못했습니다. 형식을 확인하세요.`;
-      return;
-    }
-    importNotice = mergeWatchData(runs, health);
-    render();
-  };
-
-  const pasteBtn = el("button", { class: "btn primary", onclick: async () => {
-    try {
-      const text = await navigator.clipboard.readText();
-      if (!text || !text.trim()) { msg.textContent = "복사해 둔 내용이 없습니다."; return; }
-      take(text, "붙여넣기");
-    } catch (e) {
-      msg.textContent = "붙여넣기 권한이 없습니다. 아래 상자에 직접 붙여넣고 [넣기]를 누르세요.";
-      box.focus();
-    }
-  } }, "붙여넣기로 가져오기");
-
-  const addBtn = el("button", { class: "btn", onclick: () => {
-    if (!box.value.trim()) { box.focus(); return; }
-    take(box.value, "입력한 내용");
-  } }, "넣기");
-
-  const base = location.origin + location.pathname;
-  const sample = `${base}#run=2026-07-28,5.2,31.4,152`;
-
-  return el("div", { class: "card" },
-    el("h2", null, "빠른 연동"),
-    el("p", { class: "muted" },
-      "파일을 만들지 않고 한 줄로 넣습니다. 형식은 ",
-      el("b", null, "날짜, 거리km, 시간분, 평균심박"), " — 뒤쪽은 생략해도 됩니다."),
-    el("div", { class: "row" }, pasteBtn, addBtn),
-    box, msg,
-    el("h2", { style: "margin-top:16px" }, "아이폰에서 자동으로 넣기"),
-    el("p", { class: "muted" },
-      "단축어 앱으로 러닝이 끝날 때마다 자동 실행되게 만들 수 있습니다."),
-    el("ol", { class: "notes" },
-      el("li", null, "단축어 앱 → [자동화] → 개인 자동화 만들기 → ",
-        el("b", null, "운동 → 종료됨"), " → 유형: 달리기"),
-      el("li", null, "동작: [운동 찾기] — 필터를 오늘·달리기로 두고 최근 1개만 가져오게 합니다."),
-      el("li", null, "동작: [텍스트] — 위 운동의 거리·시간·평균 심박을 쉼표로 이어 붙입니다. ",
-        el("b", null, "예) 5.2,31.4,152")),
-      el("li", null, "마지막 동작을 둘 중 하나로 고릅니다.")),
-    el("ul", { class: "notes", style: "margin-top:4px" },
-      el("li", null, el("b", null, "홈 화면 앱으로 쓰신다면"), " → [클립보드에 복사]. " +
-        "운동이 끝나면 앱을 열고 위 [붙여넣기로 가져오기]만 누르면 됩니다."),
-      el("li", null, el("b", null, "사파리로 쓰신다면"), " → [URL 열기]에 아래 주소를 쓰고 " +
-        "숫자 부분을 3단계의 텍스트로 바꿉니다. 열리는 순간 자동으로 들어갑니다.")),
-    el("div", { class: "diag", style: "word-break:break-all" }, sample),
-    el("div", { class: "row" },
-      el("button", { class: "btn tiny", onclick: async () => {
-        try { await navigator.clipboard.writeText(sample); msg.textContent = "주소를 복사했습니다."; }
-        catch (e) { msg.textContent = "복사하지 못했습니다. 위 주소를 길게 눌러 복사하세요."; }
-      } }, "주소 복사"),
-      el("a", { class: "btn tiny", href: sample }, "이 주소로 시험해 보기")),
-    el("p", { class: "muted", style: "margin-bottom:0" },
-      "iOS는 홈 화면 앱과 사파리의 저장 공간이 분리되어 있습니다. 주소로 넣는 방식은 " +
-      "사파리에만 반영되므로, 홈 화면 앱을 쓰신다면 클립보드 방식을 쓰세요. " +
-      "단축어 동작 이름은 iOS 버전에 따라 조금씩 다를 수 있습니다."));
-}
-
 /* 워치 기록 가져오기 카드 — 파일 종류를 스스로 알아보고, 미리 보여준 뒤 병합한다 */
 function watchImportCard() {
   const status = el("p", { class: "muted" },
     "애플 건강의 내보내기 ZIP, 또는 워치 앱에서 받은 CSV 파일을 넣으세요.");
   const result = el("div", { class: "diag" });
+
+  const merge = (runs, health) => {
+    // 러닝: 날짜+거리가 같으면 같은 기록으로 본다(직접 적은 것과 워치 것이 겹치는 경우)
+    let added = 0, enriched = 0;
+    for (const r of runs) {
+      const same = state.entries.find(e => e.ex === "running" && e.d === r.d &&
+                                           Math.abs(e.v - r.km) < 0.06);
+      if (same) {
+        // 이미 있는 기록에 시간·심박만 채워 넣는다
+        if (r.min && !same.min) { same.min = r.min; enriched++; }
+        if (r.hr && !same.hr) same.hr = r.hr;
+        if (r.kcal && !same.kcal) same.kcal = r.kcal;
+        continue;
+      }
+      state.entries.push({ id: uid(), d: r.d, ex: "running", v: r.km,
+                           min: r.min || undefined, hr: r.hr || undefined,
+                           kcal: r.kcal || undefined, src: "watch" });
+      added++;
+    }
+    const seenH = new Set(state.health.map(h => `${h.d}|${h.type}`));
+    let addedH = 0;
+    for (const h of health) {
+      const k = `${h.d}|${h.type}`;
+      if (seenH.has(k)) continue;          // 하루 한 건만 (워치는 하루에도 여러 번 잰다)
+      seenH.add(k); state.health.push(h); addedH++;
+    }
+    saveState();
+    return { added, enriched, addedH };
+  };
 
   const fileInput = el("input", { type: "file", class: "visually-hidden",
     accept: ".zip,.xml,.csv,application/zip,text/xml,text/csv",
@@ -2196,8 +2005,10 @@ function watchImportCard() {
           status.textContent = "취소했습니다.";
           return;
         }
-        importNotice = mergeWatchData(runs, health);
+        const r = merge(runs, health);
         render();
+        alert(`러닝 ${r.added}건을 새로 넣고, 기존 ${r.enriched}건에 시간·심박을 채웠습니다.\n` +
+              `건강 지표 ${r.addedH}건을 가져왔습니다.`);
       } catch (e) {
         status.textContent = "가져오지 못했습니다: " + e.message;
       }
@@ -2318,7 +2129,6 @@ function renderData() {
       el("p", { class: "muted" },
         "가져오기는 (날짜·종목·수량·세트) 기준으로 중복을 제외하고 병합합니다. " +
         "Numbers 파일은 tools/convert_numbers.py 로 JSON 변환 후 가져오면 됩니다.")),
-    quickSyncCard(),
     watchImportCard(),
     el("div", { class: "card" },
       el("h2", null, "초기화"),
@@ -2336,12 +2146,7 @@ function renderData() {
 
 /* ---------- 시작 ---------- */
 loadState();
-importFromUrl();      // 주소에 기록이 붙어 왔으면 먼저 반영한다
 render();
-
-// 앱이 이미 열려 있는 상태에서 같은 주소로 다시 들어오면 페이지를 새로 읽지 않고
-// 주소만 바뀐다. 그때도 기록이 들어오도록 주소 변화를 지켜본다.
-window.addEventListener("hashchange", () => { importFromUrl(); render(); });
 
 // 오프라인 지원. 파일로 직접 연 경우(file://)에는 서비스 워커를 쓸 수 없으므로 건너뛴다.
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {

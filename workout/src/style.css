@@ -290,26 +290,6 @@ table.grid td.derived { color: var(--accent); }
 }
 .diag:empty { display: none; }
 
-/* 가져온 직후 알림 */
-.card.notice { border-color: var(--accent); background: var(--panel); }
-.card.notice b { color: var(--accent); }
-
-.quickbox {
-  width: 100%;
-  margin-top: 8px;
-  font: inherit;
-  font-size: 14px;
-  color: var(--text);
-  background: var(--panel2);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px 10px;
-  resize: vertical;
-}
-.quickbox:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-
-a.btn { text-decoration: none; display: inline-block; }
-
 .notes { margin: 0; padding-left: 18px; color: var(--dim); font-size: 13px; }
 .notes li { margin-bottom: 5px; }
 .notes li:last-child { margin-bottom: 0; }
