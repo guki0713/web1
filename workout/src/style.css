@@ -150,7 +150,17 @@ button.btn:active { transform: translateY(1px); }
 .loglist li:last-child { border-bottom: none; }
 .loglist .ex { flex: 1; }
 .loglist .val { font-weight: 700; font-variant-numeric: tabular-nums; }
-.loglist .sets { color: var(--dim); font-size: 13px; }
+.loglist .sets { color: var(--dim); font-size: 13px; text-align: right; }
+.loglist .tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  color: var(--dim);
+  font-size: 11px;
+  vertical-align: middle;
+}
 .loglist button { background: none; border: none; color: var(--bad); font-size: 16px; cursor: pointer; }
 
 /* 내비게이션(주/월) */
