@@ -4,3 +4,8 @@
 운동일지-*.csv
 백업*.json
 *.numbers
+
+# 유튜브 자막 다운로더: 실행 환경과 받은 자막은 커밋하지 않는다.
+ytcc/.venv/
+ytcc/자막/
+__pycache__/
