@@ -236,6 +236,7 @@ workout/
 tools/
   build_single_file.py  ← src/ 를 index.html 하나로 합친다
   convert_numbers.py    ← .numbers 파일을 JSON으로 바꾼다
+  serve.py              ← 로컬 미리보기 서버 (오프라인 지원 확인용)
 ```
 
 **중요: `workout/index.html` 을 직접 고치지 말 것.** 빌드하면 덮어써진다.
@@ -288,7 +289,8 @@ GitHub Pages에서 주소도 짧아지고, 오프라인 저장도 간단해진�
 # 1. src/ 안의 파일을 고친다
 # 2. 빌드
 python3 tools/build_single_file.py
-# 3. 확인 — 브라우저로 workout/index.html 을 연다
+# 3. 확인 — 로컬 서버로 띄워서 본다 (오프라인 지원은 http 주소에서만 등록된다)
+python3 tools/serve.py
 # 4. 커밋 & 푸시 → GitHub Pages가 1~2분 뒤 반영
 ```
 
